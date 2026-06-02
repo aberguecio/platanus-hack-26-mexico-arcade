@@ -1,1741 +1,2359 @@
-// Platanus Hack 26 — CDMX Edition
-// Two-player brick duel. Dash with Button 1, break the word, keep your paddle alive.
+// Platanus Hack 26 — TRIGON
+// Procedural roguelike top-down shooter. You're a triangle.
 
-const GAME_WIDTH = 800;
-const GAME_HEIGHT = 600;
-const STORAGE_KEY = 'platanus-hack-26-standard-highscores';
-const MAX_HIGH_SCORES = 5;
-const WINNING_NAME_LENGTH = 3;
+// ========================================================================
+// 1. CONFIG & CONSTANTS
+// ========================================================================
+const W = 800, H = 600;
+const TILE = 40;
+// World dims grow with level (see sizeForLevel). Start values mirror the old constants.
+let WORLD_COLS = 60, WORLD_ROWS = 40;
+let WORLD_W = WORLD_COLS * TILE;
+let WORLD_H = WORLD_ROWS * TILE;
+// Generic "stay-clear-from-X" radius scaled by map area. Recomputed per level.
+let CLEARANCE = 320;
+const TICK_RATE = 60;
+const TICK_MS = 1000 / TICK_RATE;
+const MAX_TICKS_PER_FRAME = 5;
+const PLAYER_BASE_HP = 150;
+const PLAYER_BASE_SPEED = 2.6;
+const PLAYER_R = 11;
+const PICKUP_R = 22;
+const NOISE_GUNSHOT = 290;
+const NOISE_FOOTSTEP = 110;
+const SIGHT_FILL_PER_TICK = 1 / 18;
+const HACK_DURATION = 360;             // ticks ~ 6 seconds
+const BARREL_BLAST = 100;
+const BARREL_DMG = 55;
 
-const COLORS = {
-  background: 0x0b0f03,
-  frame: 0x3a3a0a,
-  accent: 0xe1ff00,
-  accentSoft: 0xa8c700,
-  p1: 0xe1ff00,
-  p2: 0xff6ec7,
-  red: 0xff7a7a,
-  white: 0xf7ffd8,
-  slate: 0xb8c48d,
-  cell: 0x1a1e05,
-  overlay: 0x0c0e02,
-  backdrop: 0x030504,
-  fieldBg: 0x0a0d0b,
-  brickA: 0x3f4a0e,
-  brickB: 0x6b7f14,
-  brickC: 0xa8c700,
-  brickD: 0xe1ff00,
+// ========================================================================
+// 2. CABINET KEYS (preserve verbatim — physical wiring)
+// ========================================================================
+// Static map from raw key → arcade code. Only the actually-read codes are
+// listed; P2_*, P1_4-6, and START2 were dead config.
+const KEY_TO_ARCADE = {
+  w:'P1_U', s:'P1_D', a:'P1_L', d:'P1_R',
+  u:'P1_1', i:'P1_2', o:'P1_3', Enter:'START1',
 };
+const held = Object.create(null), pressed = Object.create(null);
+window.addEventListener('keydown', (e) => {
+  const c = KEY_TO_ARCADE[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+  if (c) { if (!held[c]) pressed[c] = true; held[c] = true; }
+});
+window.addEventListener('keyup', (e) => {
+  const c = KEY_TO_ARCADE[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+  if (c) held[c] = false;
+});
+function consumePress(c) { const v = pressed[c]; pressed[c] = false; return v; }
 
-const LETTER_GRID = [
-  ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
-  ['H', 'I', 'J', 'K', 'L', 'M', 'N'],
-  ['O', 'P', 'Q', 'R', 'S', 'T', 'U'],
-  ['V', 'W', 'X', 'Y', 'Z', '.', '-'],
-  ['DEL', 'END'],
-];
-
-// DO NOT replace existing keys — they match the physical arcade cabinet wiring.
-// To add local testing shortcuts, append extra keys to any array.
-const CABINET_KEYS = {
-  P1_U: ['w'],
-  P1_D: ['s'],
-  P1_L: ['a'],
-  P1_R: ['d'],
-  P1_1: ['u'],
-  P1_2: ['i'],
-  P1_3: ['o'],
-  P1_4: ['j'],
-  P1_5: ['k'],
-  P1_6: ['l'],
-  P2_U: ['ArrowUp'],
-  P2_D: ['ArrowDown'],
-  P2_L: ['ArrowLeft'],
-  P2_R: ['ArrowRight'],
-  P2_1: ['r'],
-  P2_2: ['t'],
-  P2_3: ['y'],
-  P2_4: ['f'],
-  P2_5: ['g'],
-  P2_6: ['h'],
-  START1: ['Enter'],
-  START2: ['2'],
+// ========================================================================
+// 3. REGISTRIES (single source of truth)
+// ========================================================================
+const WEAPONS = {
+  pistol:   { dmg: 14, rate: 16, mag: 12, reload: 50, spread: 0.04, range: 340, speed: 14, n: 1, trigger: 'semi',   bcol: 0xffffff, name: 'PISTOL' },
+  shotgun:  { dmg: 7,  rate: 32, mag: 6,  reload: 85, spread: 0.32, range: 220, speed: 13, n: 7, trigger: 'semi',   bcol: 0xffaa44, name: 'SHOTGUN' },
+  smg:      { dmg: 5,  rate: 5,  mag: 30, reload: 60, spread: 0.16, range: 250, speed: 14, n: 1, trigger: 'auto',   bcol: 0xfff0a0, name: 'SMG' },
+  rifle:    { dmg: 11, rate: 9,  mag: 25, reload: 70, spread: 0.05, range: 380, speed: 16, n: 1, trigger: 'auto',   bcol: 0xffffff, name: 'RIFLE' },
+  burst:    { dmg: 13, rate: 24, mag: 24, reload: 65, spread: 0.04, range: 360, speed: 16, n: 1, trigger: 'burst3', bcol: 0xc0e0ff, name: 'BURST RIFLE' },
+  sniper:   { dmg: 80, rate: 60, mag: 4,  reload: 95, spread: 0.0,  range: 900, speed: 22, n: 1, trigger: 'semi',   pierce: 3, bcol: 0x66ccff, name: 'SNIPER' },
+  lmg:      { dmg: 8,  rate: 4,  mag: 80, reload: 150, spread: 0.18, range: 320, speed: 14, n: 1, trigger: 'auto',  bcol: 0xffe070, name: 'LMG' },
+  launcher: { dmg: 30, rate: 55, mag: 3,  reload: 110, spread: 0.0, range: 340, speed: 9,  n: 1, trigger: 'semi',   exp: 90, bcol: 0xff7733, name: 'LAUNCHER' },
+  flamer:   { dmg: 3,  rate: 3,  mag: 60, reload: 90,  spread: 0.45, range: 140, speed: 4,  n: 3, trigger: 'auto',   bcol: 0xff7722, burn: 110, burnDmg: 2, flame: true, banMods: ['expl', 'ricochet', 'incend', 'poison', 'laser'], name: 'FLAMER' },
 };
+const WEAPON_IDS = Object.keys(WEAPONS);
 
-const KEYBOARD_TO_ARCADE = {};
-for (const [arcadeCode, keys] of Object.entries(CABINET_KEYS)) {
-  for (const key of keys) {
-    KEYBOARD_TO_ARCADE[normalizeIncomingKey(key)] = arcadeCode;
-  }
+const MODS = {
+  rapid:    { name: 'RAPID',     desc: '-30% fire delay', apply: w => { w.rate = Math.max(2, w.rate * 0.7 | 0); } },
+  magplus:  { name: 'EXT MAG',   desc: '+50% magazine',   apply: w => { w.mag = Math.ceil(w.mag * 1.5); } },
+  pierce:   { name: 'PIERCE',    desc: '+1 pierce',       apply: w => { w.pierce = (w.pierce || 0) + 1; } },
+  expl:     { name: 'EXPLOSIVE', desc: '+blast on hit',   apply: w => { w.exp = (w.exp || 0) + 36; } },
+  vamp:     { name: 'LIFESTEAL', desc: 'heal 8% damage',  apply: w => { w.vamp = (w.vamp || 0) + 0.08; } },
+  crit:     { name: 'CRIT',      desc: '+25% crit x2.5',  apply: w => { w.crit = (w.crit || 0) + 0.25; } },
+  ricochet: { name: 'RICOCHET',  desc: '+1 bounce',       apply: w => { w.bounce = (w.bounce || 0) + 1; } },
+  magnum:   { name: 'MAGNUM',    desc: '+40% damage',     apply: w => { w.dmg = w.dmg * 1.4; } },
+  silenced: { name: 'SILENCED',  desc: 'no noise',        apply: w => { w.silent = true; } },
+  multi:    { name: 'MULTISHOT', desc: '+1 bullet/shot',  apply: w => { w.n = (w.n || 1) + 1; } },
+  incend:   { name: 'INCENDIARY',desc: '+burn DOT (short, hot)',  apply: w => { w.burn = (w.burn || 0) + 60;  w.burnDmg = (w.burnDmg || 0) + 2; } },
+  poison:   { name: 'POISON',    desc: '+venom DOT (long, slow)', apply: w => { w.burn = (w.burn || 0) + 240; w.burnDmg = (w.burnDmg || 0) + 1; w.dotPal = POISON_COLS; } },
+  laser:    { name: 'LASER',     desc: '+15% range, -50% spread', apply: w => { if (!w.laser) { w.range *= 1.15; w.laser = true; } w.spread *= 0.5; } },
+};
+const MOD_IDS = Object.keys(MODS);
+
+const ENEMIES = {
+  grunt:   { hp: 25, weapon: 'pistol',  speed: 1.1, sight: 420, cone: 1.4, coverIQ: 0.8, col: 0x88aaff, r: 12, react: 25,  score: 5 },
+  runner:  { hp: 20, weapon: 'smg',     speed: 1.7, sight: 360, cone: 1.6, coverIQ: 0.2, col: 0xffaa44, r: 10, react: 18,  score: 7 },
+  sniper:  { hp: 22, weapon: 'sniper',  speed: 0.9, sight: 720, cone: 1.0, coverIQ: 1.0, col: 0x44dd66, r: 11, react: 36,  score: 12 },
+  bruiser: { hp: 65, weapon: 'shotgun', speed: 0.95,sight: 340, cone: 1.7, coverIQ: 0.4, col: 0xff2030, r: 16, react: 22,  score: 10 },
+  drone:   { hp: 12, weapon: 'smg',     speed: 1.5, sight: 420, cone: 2.0, coverIQ: 0.0, col: 0xffffff, r: 9,  react: 14,  fly: true, score: 6 },
+  pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, coverIQ: 0.2, col: 0xff5522, r: 13, react: 20,  score: 14 },
+};
+const ENEMY_IDS = Object.keys(ENEMIES);
+// Skin tones used as random head-inner color per enemy spawn.
+const SKINS = [0xffe0b8, 0xf2cba0, 0xe0a878, 0xc08858, 0xa06838, 0x704020, 0x3a2010];
+
+// ------------------------------------------------------------------------
+// Narrative tables (codenames, factions, briefings, chatter, callbacks).
+// All strings inline; placeholders {HANDLER} {FACTION} {NAME} {PAST_NAME}
+// are filled by renderTemplate().
+// ------------------------------------------------------------------------
+// Codename + faction tables (used by spawn naming + objText/death screen).
+const FIRE_COLS = [0xff4422, 0xff8833, 0xffcc44, 0xffee88];
+const POISON_COLS = [0x33aa22, 0x66cc44, 0xaaee55, 0xccff88];
+const ADJECTIVES = ['GHOST','BLIND','SILENT','HOLLOW','IRON','PALE','GREY','LAST'];
+const NOUNS      = ['CARDINAL','ORCHID','VESPER','SPIRE','HARROW','EMBER','OBELISK','SAINT'];
+const FACTIONS   = ['THE HOLLOW','OBSIDIAN','BLACK TIDE','GLASSWORKS'];
+
+// ========================================================================
+// 4. MATH & HELPER UTILS (used everywhere — keep small + pure)
+// ========================================================================
+function angDiff(a, b) {
+  let d = a - b;
+  while (d >  Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }
+// Squared distance — saves the sqrt vs Math.hypot when only comparing.
+const d2 = (ax, ay, bx, by) => (ax - bx) * (ax - bx) + (ay - by) * (ay - by);
+// Random element of an array.
+const pickFrom = arr => arr[(Math.random() * arr.length) | 0];
+// Pixel → tile coord.
+const pt = v => (v / TILE) | 0;
+// Size of the world for a given level. Caps prevent runaway memory + camera.
+function sizeForLevel(n) {
+  return {
+    cols: Math.max(60, Math.min(140, 60 + ((n * 1.5) | 0))),
+    rows: Math.max(40, Math.min(100, 40 + n)),
+  };
+}
+// Apply a level's world dims globally — must be called BEFORE genLevel.
+function applyWorldSize(n) {
+  const sz = sizeForLevel(n);
+  WORLD_COLS = sz.cols; WORLD_ROWS = sz.rows;
+  WORLD_W = WORLD_COLS * TILE; WORLD_H = WORLD_ROWS * TILE;
+  CLEARANCE = Math.sqrt(WORLD_COLS * WORLD_ROWS) * TILE * 0.15 | 0;
+  if (scene && scene.cameras) scene.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
+}
+// Tile helpers: tileAt uses 1 (solid) outside the map so out-of-bounds
+// always blocks LOS and movement. tileCenter returns world-space [x, y].
+function tileAt(m, cx, cy) {
+  if (cx < 0 || cy < 0 || cx >= WORLD_COLS || cy >= WORLD_ROWS) return 1;
+  return m[cy * WORLD_COLS + cx];
+}
+const setTile = (m, cx, cy, v) => { m[cy * WORLD_COLS + cx] = v; };
+const tileCenter = (cx, cy) => [cx * TILE + TILE / 2, cy * TILE + TILE / 2];
+const isSolid = (m, cx, cy) => tileAt(m, cx, cy) === 1;
 
-const config = {
+// ========================================================================
+// 5. PHASER BOOTSTRAP
+// ========================================================================
+const game = new Phaser.Game({
   type: Phaser.AUTO,
-  width: GAME_WIDTH,
-  height: GAME_HEIGHT,
+  width: W, height: H,
   parent: 'game-root',
-  backgroundColor: '#0b0f03',
-  physics: {
-    default: 'arcade',
-    arcade: {
-      gravity: { y: 0 },
-      debug: false,
-    },
-  },
-  scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
-    width: GAME_WIDTH,
-    height: GAME_HEIGHT,
-  },
-  scene: {
-    preload,
-    create,
-    update,
-  },
-};
+  backgroundColor: '#0a0d12',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: { create, update },
+});
 
-new Phaser.Game(config);
+let g, gHud, hudText, msgText, objText, scene, timerText;
+let acc = 0, lastT = 0;
 
-function preload() {}
+let mode = 'title';
+let player, bullets = [], enemies = [], pickups = [], particles = [], explosions = [];
+let props = [];                          // barrels, terminals, cages
+let bloodStains = [];                    // permanent floor splats; FIFO-capped
+let corpses = [];                        // dead-enemy bodies, stay rendered until level change
+let hostage = null, mission = null, mapRooms = [];
+let map, levelN = 1, score = 0, best = 0, portal = null;
+let roomsWithItems = new Set();   // rooms that already contain a pickup/objective; one item per room
+// Narrative state — picked at startRun, referenced by objText + death screen.
+let factionName = 'THE HOLLOW';
+let runRoster = [];               // unused codenames left in this run, popped per spawn
+let runHistory = [];              // {name, kind, fate, level} for every named entity this run
+let frameCount = 0;
+let footstepCounter = 0;
+let musicStarted = false, musTimer = null, musStep = 0;
 
 function create() {
-  const scene = this;
-
-  scene.state = {
-    phase: 'loading',
-    scores: { p1: 0, p2: 0 },
-    remainingBricks: 0,
-    highScores: [],
-    winner: null,
-    winnerLabel: '',
-    saveStatus: 'Loading scores...',
-    menu: { cursor: 0, cooldown: 0, lastAxis: 0 },
-    dash: {
-      p1: { activeUntil: 0, cooldownUntil: 0, dir: 0 },
-      p2: { activeUntil: 0, cooldownUntil: 0, dir: 0 },
-    },
-    nameEntry: {
-      letters: [],
-      row: 0,
-      col: 0,
-      moveCooldownUntil: 0,
-      confirmCooldownUntil: 0,
-      lastMoveVector: { x: 0, y: 0 },
-    },
-  };
-
-  scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, COLORS.background);
-  scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 760, 560, 0x141a04, 0.94).setStrokeStyle(4, COLORS.frame, 0.8);
-
-  createBackground(scene);
-  createHud(scene);
-  createPlayfield(scene);
-  createEndGameUi(scene);
-  createStartScreen(scene);
-  createLeaderboardScreen(scene);
-  createControlsScreen(scene);
-  createPauseScreen(scene);
-  createControls(scene);
-  showStartScreen(scene);
-
-  loadHighScores()
-    .then((highScores) => {
-      scene.state.highScores = highScores;
-      scene.state.saveStatus = 'Finish a duel to save a score.';
-      refreshLeaderboard(scene);
-      refreshStartScreenLeaderboard(scene);
-    })
-    .catch(() => {
-      scene.state.highScores = [];
-      scene.state.saveStatus = 'Storage unavailable. Match runs without saves.';
-      refreshLeaderboard(scene);
-      refreshStartScreenLeaderboard(scene);
-    });
+  scene = this;
+  g = this.add.graphics();
+  gHud = this.add.graphics().setScrollFactor(0).setDepth(900);
+  hudText = this.add.text(8, 44, '', { fontFamily: 'monospace', fontSize: '13px', color: '#cfd' })
+    .setScrollFactor(0).setDepth(1000);
+  objText = this.add.text(W / 2, 116, '', { fontFamily: 'monospace', fontSize: '14px', color: '#ffd060', align: 'center' })
+    .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
+  msgText = this.add.text(W / 2, H / 2, '', { fontFamily: 'monospace', fontSize: '20px', color: '#fff', align: 'center' })
+    .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
+  // Big stealth timer, top-right under the GPS compass.
+  timerText = this.add.text(W - 60, 50, '', { fontFamily: 'monospace', fontSize: '24px', color: '#ffd060', align: 'center' })
+    .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
+  this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
+  loadBest();
+  goTitle();
 }
 
-function update(time, delta) {
-  const scene = this;
-  if (!scene.state) {
-    return;
+function update(time) {
+  if (lastT === 0) lastT = time;
+  acc += time - lastT;
+  lastT = time;
+  let steps = 0;
+  while (acc >= TICK_MS && steps < MAX_TICKS_PER_FRAME) {
+    runTick();
+    acc -= TICK_MS;
+    steps++;
+    frameCount++;
   }
-
-  const phase = scene.state.phase;
-
-  if (phase === 'start') {
-    handleStartMenu(scene, time);
-    return;
+  if (player && mode === 'play') {
+    const cam = scene.cameras.main;
+    cam.scrollX += (player.x - W / 2 - cam.scrollX) * 0.15;
+    cam.scrollY += (player.y - H / 2 - cam.scrollY) * 0.15;
   }
+  render();
+}
 
-  if (phase === 'leaderboard') {
-    if (consumeAnyPressedControl(scene, ['START1', 'START2', 'P1_1', 'P2_1', 'P1_2', 'P2_2'])) {
-      scene.leaderScreen.container.setVisible(false);
-      showStartScreen(scene);
-    }
-    return;
+// ========================================================================
+// 6. MAP GEN + LOS  (BSP rooms+corridors → m: Uint8Array, rooms: list)
+// ========================================================================
+function hasLOS(m, x0, y0, x1, y1) {
+  const steps = Math.max(2, (Math.hypot(x1 - x0, y1 - y0) / 8) | 0);
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const x = x0 + (x1 - x0) * t, y = y0 + (y1 - y0) * t;
+    if (isSolid(m, pt(x), pt(y))) return false;
   }
+  return true;
+}
 
-  if (phase === 'controls') {
-    if (consumeAnyPressedControl(scene, ['START1', 'START2', 'P1_1', 'P2_1', 'P1_2', 'P2_2'])) {
-      scene.controlsScreen.container.setVisible(false);
-      showStartScreen(scene);
-    }
-    return;
-  }
-
-  if (phase === 'playing') {
-    updatePaddles(scene, delta, time);
-    updateBallGhostStates(scene);
-    updateBallTrails(scene, time);
-    checkBallEscape(scene);
-    if (consumeAnyPressedControl(scene, ['START1', 'START2'])) {
-      pauseMatch(scene);
-    }
-    return;
-  }
-
-  if (phase === 'paused') {
-    if (consumeAnyPressedControl(scene, ['START1', 'START2'])) {
-      resumeMatch(scene);
-    }
-    return;
-  }
-
-  if (phase === 'gameover') {
-    handleNameEntry(scene, time);
-    return;
-  }
-
-  if (phase === 'saved') {
-    if (consumeAnyPressedControl(scene, ['START1', 'START2', 'P1_1', 'P2_1', 'P1_2', 'P2_2'])) {
-      returnToStart(scene);
+// BSP rooms-and-corridors. Returns map + room list.
+function genLevel(n) {
+  const m = new Uint8Array(WORLD_COLS * WORLD_ROWS);
+  for (let i = 0; i < m.length; i++) m[i] = 1;
+  const rooms = [];
+  bspGen(m, 1, 1, WORLD_COLS - 2, WORLD_ROWS - 2, 9, rooms);
+  carveRect(m, 1, 1, 5, 5);
+  carveRect(m, WORLD_COLS - 6, WORLD_ROWS - 6, 5, 5);
+  const startR = nearestRoom(rooms, 3, 3);
+  const endR = nearestRoom(rooms, WORLD_COLS - 3, WORLD_ROWS - 3);
+  if (startR) carveCorridor(m, 3, 3, startR.cx, startR.cy);
+  if (endR) carveCorridor(m, WORLD_COLS - 3, WORLD_ROWS - 3, endR.cx, endR.cy);
+  // tactical cover inside larger rooms
+  const coverPieces = 22 + Math.min(40, n * 2);
+  for (let i = 0; i < coverPieces; i++) {
+    const r = pickFrom(rooms);
+    if (!r || r.w < 5 || r.h < 5) continue;
+    const cx = r.x + 1 + (Math.random() * (r.w - 2) | 0);
+    const cy = r.y + 1 + (Math.random() * (r.h - 2) | 0);
+    if (cx > 0 && cx < WORLD_COLS - 1 && cy > 0 && cy < WORLD_ROWS - 1) {
+      if (Math.abs(cx - r.cx) + Math.abs(cy - r.cy) > 1) setTile(m, cx, cy, 1);
     }
   }
+  // procedural floor variation flag map (purely visual). Not included in m;
+  // we reuse a hash from coords at draw time, so no extra storage.
+  return { m, rooms };
 }
 
-function createBackground(scene) {
-  scene.add.rectangle(
-    GAME_WIDTH / 2,
-    GAME_HEIGHT / 2,
-    700,
-    450,
-    COLORS.fieldBg,
-    0.18,
-  );
-}
-
-function createHud(scene) {
-  scene.hud = {};
-
-  scene.hud.title = scene.add
-    .text(GAME_WIDTH / 2, 20, 'PLATANUS HACK 26 BRICKS', {
-      fontFamily: 'monospace',
-      fontSize: '22px',
-      color: '#f7fbff',
-      fontStyle: 'bold',
-      align: 'center',
-    })
-    .setOrigin(0.5, 0);
-
-  scene.hud.subtitle = scene.add
-    .text(
-      GAME_WIDTH / 2,
-      48,
-      '',
-      {
-        fontFamily: 'monospace',
-        fontSize: '11px',
-        color: '#a8ad8a',
-        align: 'center',
-      },
-    )
-    .setOrigin(0.5, 0);
-
-  scene.hud.p1Score = scene.add
-    .text(65, 72, 'P1 00', {
-      fontFamily: 'monospace',
-      fontSize: '28px',
-      color: '#e1ff00',
-      fontStyle: 'bold',
-    })
-    .setOrigin(0, 0.5);
-
-  scene.hud.p2Score = scene.add
-    .text(GAME_WIDTH - 65, 72, 'P2 00', {
-      fontFamily: 'monospace',
-      fontSize: '28px',
-      color: '#ff6ec7',
-      fontStyle: 'bold',
-    })
-    .setOrigin(1, 0.5);
-
-  scene.hud.remaining = scene.add
-    .text(GAME_WIDTH / 2, 72, 'BRICKS 000', {
-      fontFamily: 'monospace',
-      fontSize: '18px',
-      color: '#ffd84d',
-      fontStyle: 'bold',
-    })
-    .setOrigin(0.5);
-
-  scene.hud.status = scene.add
-    .text(GAME_WIDTH / 2, GAME_HEIGHT - 24, '', {
-      fontFamily: 'monospace',
-      fontSize: '14px',
-      color: '#f7fbff',
-      align: 'center',
-    })
-    .setOrigin(0.5);
-
-  scene.hud.scoreColors = {
-    p1: '#e1ff00',
-    p2: '#ff6ec7',
-    penalty: '#ff7a7a',
-  };
-}
-
-function createPlayfield(scene) {
-  scene.playfield = {};
-  const paddleWidth = 112;
-  const paddleHeight = 10;
-  const topBounceLineY = 118;
-  const bottomBounceLineY = GAME_HEIGHT - 72;
-  const wallThickness = 8;
-  const wallGap = 22;
-  const topPaddleY = topBounceLineY - paddleHeight / 2;
-  const bottomPaddleY = bottomBounceLineY + paddleHeight / 2;
-  const topWallY = topBounceLineY - wallGap - wallThickness / 2;
-  const bottomWallY = bottomBounceLineY + wallGap + wallThickness / 2;
-
-  // Walls span full width/height so corners are sealed — balls cannot escape through gaps.
-  scene.playfield.leftWall = scene.add.rectangle(38, GAME_HEIGHT / 2, 14, GAME_HEIGHT, COLORS.frame, 0);
-  scene.playfield.rightWall = scene.add.rectangle(GAME_WIDTH - 38, GAME_HEIGHT / 2, 14, GAME_HEIGHT, COLORS.frame, 0);
-  scene.playfield.topWall = scene.add.rectangle(
-    GAME_WIDTH / 2,
-    topWallY,
-    GAME_WIDTH,
-    wallThickness,
-    COLORS.frame,
-    0,
-  );
-  scene.playfield.bottomWall = scene.add.rectangle(
-    GAME_WIDTH / 2,
-    bottomWallY,
-    GAME_WIDTH,
-    wallThickness,
-    COLORS.frame,
-    0,
-  );
-
-  scene.physics.add.existing(scene.playfield.leftWall, true);
-  scene.physics.add.existing(scene.playfield.rightWall, true);
-  scene.physics.add.existing(scene.playfield.topWall, true);
-  scene.physics.add.existing(scene.playfield.bottomWall, true);
-
-  scene.add.rectangle(
-    GAME_WIDTH / 2,
-    topBounceLineY,
-    700,
-    1,
-    COLORS.frame,
-    0.55,
-  );
-  scene.add.rectangle(
-    GAME_WIDTH / 2,
-    bottomBounceLineY,
-    700,
-    1,
-    COLORS.frame,
-    0.55,
-  );
-
-  scene.playfield.p1Paddle = scene.add.rectangle(
-    GAME_WIDTH / 2,
-    topPaddleY,
-    paddleWidth,
-    paddleHeight,
-    COLORS.p1,
-    1,
-  );
-  scene.playfield.p2Paddle = scene.add.rectangle(
-    GAME_WIDTH / 2,
-    bottomPaddleY,
-    paddleWidth,
-    paddleHeight,
-    COLORS.p2,
-    1,
-  );
-
-  scene.physics.add.existing(scene.playfield.p1Paddle);
-  scene.physics.add.existing(scene.playfield.p2Paddle);
-
-  configurePaddleBody(scene.playfield.p1Paddle.body);
-  configurePaddleBody(scene.playfield.p2Paddle.body);
-
-  scene.playfield.balls = [
-    createBall(scene, GAME_WIDTH / 2 - 120, 170, COLORS.white, 'p1'),
-    createBall(scene, GAME_WIDTH / 2 + 120, GAME_HEIGHT - 170, COLORS.white, 'p2'),
-  ];
-
-  scene.playfield.bricks = scene.physics.add.staticGroup();
-  scene.playfield.ballTrails = scene.add.group();
-
-  for (const ball of scene.playfield.balls) {
-    scene.physics.add.collider(ball, scene.playfield.leftWall);
-    scene.physics.add.collider(ball, scene.playfield.rightWall);
-    scene.physics.add.collider(ball, scene.playfield.topWall);
-    scene.physics.add.collider(ball, scene.playfield.bottomWall);
-    scene.physics.add.collider(
-      ball,
-      scene.playfield.p1Paddle,
-      () => handleBallPaddleCollision(scene, ball, scene.playfield.p1Paddle, 'p1'),
-      () => canBallCollideWithPaddle(ball, 'p1'),
-      scene,
-    );
-    scene.physics.add.collider(
-      ball,
-      scene.playfield.p2Paddle,
-      () => handleBallPaddleCollision(scene, ball, scene.playfield.p2Paddle, 'p2'),
-      () => canBallCollideWithPaddle(ball, 'p2'),
-      scene,
-    );
-    scene.physics.add.collider(
-      ball,
-      scene.playfield.bricks,
-      (_, brick) => handleBallBrickCollision(scene, ball, brick),
-      undefined,
-      scene,
-    );
+function bspGen(m, x, y, w, h, minLeaf, rooms) {
+  const canSplitV = w >= minLeaf * 2;
+  const canSplitH = h >= minLeaf * 2;
+  let splitV;
+  if (canSplitV && canSplitH) splitV = (w / h > 1.25) ? true : (h / w > 1.25 ? false : Math.random() < 0.5);
+  else if (canSplitV) splitV = true;
+  else if (canSplitH) splitV = false;
+  else {
+    const room = carveRoomIn(m, x, y, w, h);
+    if (room) rooms.push(room);
+    return room;
   }
-}
-
-function createEndGameUi(scene) {
-  scene.endGame = {};
-
-  scene.endGame.container = scene.add.container(0, 0);
-  scene.endGame.container.setDepth(20);
-  scene.endGame.container.setVisible(false);
-
-  const backdrop = scene.add.rectangle(
-    GAME_WIDTH / 2,
-    GAME_HEIGHT / 2,
-    GAME_WIDTH,
-    GAME_HEIGHT,
-    COLORS.backdrop,
-    0.98,
-  );
-  scene.endGame.container.add(backdrop);
-
-  scene.endGame.title = scene.add
-    .text(GAME_WIDTH / 2, 88, 'GAME OVER', {
-      fontFamily: 'monospace',
-      fontSize: '30px',
-      color: '#f7ffd8',
-      fontStyle: 'bold',
-    })
-    .setOrigin(0.5);
-
-  scene.endGame.summary = scene.add
-    .text(GAME_WIDTH / 2, 126, '', {
-      fontFamily: 'monospace',
-      fontSize: '22px',
-      color: '#e1ff00',
-      align: 'center',
-    })
-    .setOrigin(0.5);
-
-  scene.endGame.nameLabel = scene.add
-    .text(GAME_WIDTH / 2, 172, '', {
-      fontFamily: 'monospace',
-      fontSize: '13px',
-      color: '#a8ad8a',
-      align: 'center',
-    })
-    .setOrigin(0.5);
-
-  scene.endGame.nameValue = scene.add
-    .text(GAME_WIDTH / 2, 208, '___', {
-      fontFamily: 'monospace',
-      fontSize: '36px',
-      color: '#ff6ec7',
-      fontStyle: 'bold',
-      align: 'center',
-      letterSpacing: 10,
-    })
-    .setOrigin(0.5);
-
-  scene.endGame.instructions = scene.add
-    .text(
-      GAME_WIDTH / 2,
-      242,
-      'MOVE  PICK',
-      {
-        fontFamily: 'monospace',
-        fontSize: '11px',
-        color: '#a8ad8a',
-        align: 'center',
-      },
-    )
-    .setOrigin(0.5);
-
-  scene.endGame.leaderboardTitle = scene.add
-    .text(GAME_WIDTH / 2, 286, 'SCOREBOARD', {
-      fontFamily: 'monospace',
-      fontSize: '14px',
-      color: '#e1ff00',
-      fontStyle: 'bold',
-      align: 'center',
-    })
-    .setOrigin(0.5);
-
-  scene.endGame.gridLabels = [];
-
-  for (let row = 0; row < LETTER_GRID.length; row += 1) {
-    const rowValues = LETTER_GRID[row];
-    const rowWidth = rowValues.length * 56;
-    for (let col = 0; col < rowValues.length; col += 1) {
-      const value = rowValues[col];
-      const cellX = GAME_WIDTH / 2 - rowWidth / 2 + 28 + col * 56;
-      const cellY = 430 + row * 28;
-
-      const cell = scene.add.rectangle(cellX, cellY, value.length > 1 ? 64 : 42, 24, COLORS.cell, 0.95);
-      cell.setStrokeStyle(2, COLORS.frame, 0.8);
-
-      const label = scene.add
-        .text(cellX, cellY, value, {
-          fontFamily: 'monospace',
-          fontSize: value.length > 1 ? '14px' : '18px',
-          color: '#f7fbff',
-          fontStyle: 'bold',
-          align: 'center',
-        })
-        .setOrigin(0.5);
-
-      scene.endGame.gridLabels.push({ cell, label, row, col, value });
-      scene.endGame.container.add(cell);
-      scene.endGame.container.add(label);
-    }
-  }
-
-  scene.endGame.saveStatus = scene.add
-    .text(GAME_WIDTH / 2, 590, '', {
-      fontFamily: 'monospace',
-      fontSize: '11px',
-      color: '#e1ff00',
-      align: 'center',
-    })
-    .setOrigin(0.5);
-
-  scene.endGame.leaderboard = scene.add
-    .text(GAME_WIDTH / 2, 308, '', {
-      fontFamily: 'monospace',
-      fontSize: '12px',
-      color: '#f7ffd8',
-      align: 'center',
-      lineSpacing: 4,
-    })
-    .setOrigin(0.5, 0);
-
-  scene.endGame.container.add(scene.endGame.title);
-  scene.endGame.container.add(scene.endGame.summary);
-  scene.endGame.container.add(scene.endGame.nameLabel);
-  scene.endGame.container.add(scene.endGame.nameValue);
-  scene.endGame.container.add(scene.endGame.instructions);
-  scene.endGame.container.add(scene.endGame.leaderboardTitle);
-  scene.endGame.container.add(scene.endGame.leaderboard);
-  scene.endGame.container.add(scene.endGame.saveStatus);
-}
-
-function createControls(scene) {
-  scene.controls = {
-    held: Object.create(null),
-    pressed: Object.create(null),
-  };
-
-  const onKeyDown = (event) => {
-    const key = normalizeIncomingKey(event.key);
-    if (!key) {
-      return;
-    }
-
-    const arcadeCode = KEYBOARD_TO_ARCADE[key];
-    if (!arcadeCode) {
-      return;
-    }
-
-    if (!scene.controls.held[arcadeCode]) {
-      scene.controls.pressed[arcadeCode] = true;
-    }
-    scene.controls.held[arcadeCode] = true;
-  };
-
-  const onKeyUp = (event) => {
-    const key = normalizeIncomingKey(event.key);
-    if (!key) {
-      return;
-    }
-
-    const arcadeCode = KEYBOARD_TO_ARCADE[key];
-    if (!arcadeCode) {
-      return;
-    }
-
-    scene.controls.held[arcadeCode] = false;
-  };
-
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-
-  scene.events.once('shutdown', () => {
-    window.removeEventListener('keydown', onKeyDown);
-    window.removeEventListener('keyup', onKeyUp);
-  });
-}
-
-function startMatch(scene) {
-  scene.physics.resume();
-  scene.startScreen.container.setVisible(false);
-  buildTextBricks(scene);
-  resetBalls(scene);
-  scene.state.scores = { p1: 0, p2: 0 };
-  refreshHud(scene);
-  scene.state.phase = 'playing';
-  scene.hud.status.setText('');
-}
-
-function createStartScreen(scene) {
-  scene.startScreen = {};
-  const c = scene.add.container(0, 0);
-  c.setDepth(15);
-  scene.startScreen.container = c;
-
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, COLORS.overlay, 0.97));
-
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, 88, 'PLATANUS HACK 26', {
-        fontFamily: 'monospace', fontSize: '16px', color: '#a8c700',
-      })
-      .setOrigin(0.5),
-  );
-  const titleMain = scene.add
-    .text(GAME_WIDTH / 2, 150, 'CDMX EDITION', {
-      fontFamily: 'monospace', fontSize: '38px', color: '#e1ff00', fontStyle: 'bold',
-    })
-    .setOrigin(0.5);
-  c.add(titleMain);
-  scene.tweens.add({
-    targets: titleMain,
-    scale: 1.025,
-    alpha: 0.88,
-    duration: 1100,
-    yoyo: true,
-    repeat: -1,
-    ease: 'Sine.easeInOut',
-  });
-
-  scene.startScreen.buttons = [];
-  const buttonLabels = ['PLAY', 'LEADERBOARD', 'CONTROLS'];
-  for (let i = 0; i < buttonLabels.length; i += 1) {
-    const y = 232 + i * 50;
-    const bg = scene.add.rectangle(GAME_WIDTH / 2, y, 280, 42, COLORS.cell, 0.95);
-    bg.setStrokeStyle(2, COLORS.frame, 0.8);
-    const label = scene.add
-      .text(GAME_WIDTH / 2, y, buttonLabels[i], {
-        fontFamily: 'monospace', fontSize: '22px', color: '#f7ffd8', fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    c.add(bg);
-    c.add(label);
-    scene.startScreen.buttons.push({ bg, label });
-  }
-
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, 380, 'SCOREBOARD', {
-        fontFamily: 'monospace', fontSize: '14px', color: '#e1ff00', fontStyle: 'bold',
-      })
-      .setOrigin(0.5),
-  );
-  scene.startScreen.leaderboard = scene.add
-    .text(GAME_WIDTH / 2, 402, '', {
-      fontFamily: 'monospace', fontSize: '13px', color: '#f7ffd8', align: 'center', lineSpacing: 4,
-    })
-    .setOrigin(0.5, 0);
-  c.add(scene.startScreen.leaderboard);
-
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT - 22, 'MOVE ↕   CONFIRM B / START', {
-        fontFamily: 'monospace', fontSize: '11px', color: '#6f7a4a',
-      })
-      .setOrigin(0.5),
-  );
-
-  c.setVisible(false);
-}
-
-function showStartScreen(scene) {
-  scene.state.phase = 'start';
-  scene.state.menu = { cursor: 0, cooldown: 0, lastAxis: 0 };
-  refreshStartScreenLeaderboard(scene);
-  updateStartMenuHighlight(scene);
-  scene.startScreen.container.setVisible(true);
-}
-
-function createLeaderboardScreen(scene) {
-  scene.leaderScreen = {};
-  const c = scene.add.container(0, 0);
-  c.setDepth(16);
-  scene.leaderScreen.container = c;
-
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, COLORS.overlay, 0.98));
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, 90, 'LEADERBOARD', {
-        fontFamily: 'monospace', fontSize: '30px', color: '#e1ff00', fontStyle: 'bold',
-      })
-      .setOrigin(0.5),
-  );
-
-  scene.leaderScreen.list = scene.add
-    .text(GAME_WIDTH / 2, 160, '', {
-      fontFamily: 'monospace', fontSize: '20px', color: '#f7ffd8',
-      align: 'center', lineSpacing: 12,
-    })
-    .setOrigin(0.5, 0);
-  c.add(scene.leaderScreen.list);
-
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT - 28, 'PRESS START TO GO BACK', {
-        fontFamily: 'monospace', fontSize: '12px', color: '#6f7a4a',
-      })
-      .setOrigin(0.5),
-  );
-
-  c.setVisible(false);
-}
-
-function createControlsScreen(scene) {
-  scene.controlsScreen = {};
-  const c = scene.add.container(0, 0);
-  c.setDepth(16);
-  scene.controlsScreen.container = c;
-
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, COLORS.overlay, 0.98));
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, 110, 'CONTROLS', {
-        fontFamily: 'monospace', fontSize: '30px', color: '#e1ff00', fontStyle: 'bold',
-      })
-      .setOrigin(0.5),
-  );
-
-  const lines = [
-    'P1   MOVE  A / D',
-    'P1   DASH  U',
-    '',
-    'P2   MOVE  ← / →',
-    'P2   DASH  R',
-    '',
-    'PAUSE      ENTER',
-  ];
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, 200, lines.join('\n'), {
-        fontFamily: 'monospace', fontSize: '18px', color: '#f7ffd8',
-        align: 'center', lineSpacing: 8,
-      })
-      .setOrigin(0.5, 0),
-  );
-
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT - 28, 'PRESS START TO GO BACK', {
-        fontFamily: 'monospace', fontSize: '12px', color: '#6f7a4a',
-      })
-      .setOrigin(0.5),
-  );
-
-  c.setVisible(false);
-}
-
-function showControlsScreen(scene) {
-  scene.startScreen.container.setVisible(false);
-  scene.controlsScreen.container.setVisible(true);
-  scene.state.phase = 'controls';
-}
-
-function showLeaderboardScreen(scene) {
-  const lines = scene.state.highScores.length
-    ? scene.state.highScores.map((e, i) =>
-        `${String(i + 1).padStart(2, '0')}  ${e.name.padEnd(3, ' ')}  ${String(e.score).padStart(3, ' ')}  ${e.winner}`,
-      )
-    : ['NO SAVED SCORES YET'];
-  scene.leaderScreen.list.setText(lines.join('\n'));
-  scene.startScreen.container.setVisible(false);
-  scene.leaderScreen.container.setVisible(true);
-  scene.state.phase = 'leaderboard';
-}
-
-function refreshStartScreenLeaderboard(scene) {
-  const lines = scene.state.highScores.length
-    ? scene.state.highScores.map((e, i) =>
-        `${String(i + 1).padStart(2, '0')} ${e.name.padEnd(3, ' ')} ${String(e.score).padStart(2, '0')} ${e.winner}`,
-      )
-    : ['NO SAVED SCORES YET'];
-  scene.startScreen.leaderboard.setText(lines.join('\n'));
-}
-
-function updateStartMenuHighlight(scene) {
-  const cursor = scene.state.menu.cursor;
-  scene.startScreen.buttons.forEach(({ bg, label }, i) => {
-    const active = i === cursor;
-    bg.setFillStyle(active ? COLORS.accent : COLORS.cell, active ? 1 : 0.95);
-    bg.setStrokeStyle(2, active ? COLORS.white : COLORS.frame, active ? 1 : 0.8);
-    label.setColor(active ? '#04110b' : '#f7ffd8');
-  });
-}
-
-function handleStartMenu(scene, time) {
-  const menu = scene.state.menu;
-  const axisY = getVerticalMenuAxis(scene.controls);
-
-  if (time >= menu.cooldown && axisY !== 0 && menu.lastAxis !== axisY) {
-    menu.cursor = Phaser.Math.Wrap(menu.cursor + axisY, 0, scene.startScreen.buttons.length);
-    menu.cooldown = time + 160;
-    updateStartMenuHighlight(scene);
-    playSound(scene, 'click');
-  }
-  if (axisY === 0) {
-    menu.lastAxis = 0;
+  let left, right;
+  if (splitV) {
+    const sp = (minLeaf + Math.random() * (w - minLeaf * 2)) | 0;
+    left = bspGen(m, x, y, sp, h, minLeaf, rooms);
+    right = bspGen(m, x + sp, y, w - sp, h, minLeaf, rooms);
   } else {
-    menu.lastAxis = axisY;
+    const sp = (minLeaf + Math.random() * (h - minLeaf * 2)) | 0;
+    left = bspGen(m, x, y, w, sp, minLeaf, rooms);
+    right = bspGen(m, x, y + sp, w, h - sp, minLeaf, rooms);
+  }
+  if (left && right) carveCorridor(m, left.cx, left.cy, right.cx, right.cy);
+  return left || right;
+}
+
+function carveRoomIn(m, x, y, w, h) {
+  const pad = 1 + (Math.random() * 2 | 0);
+  const rw = Math.max(3, w - pad * 2);
+  const rh = Math.max(3, h - pad * 2);
+  const slackX = Math.max(0, w - rw - pad);
+  const slackY = Math.max(0, h - rh - pad);
+  const rx = x + pad + (Math.random() * (slackX - pad + 1) | 0);
+  const ry = y + pad + (Math.random() * (slackY - pad + 1) | 0);
+  carveRect(m, rx, ry, rw, rh);
+  return { x: rx, y: ry, w: rw, h: rh, cx: rx + (rw / 2 | 0), cy: ry + (rh / 2 | 0) };
+}
+
+// Single inclusive rectangle carver. Used for rooms (rect), corridors
+// (1-tile-thick H/V lines), and the start/exit boxes.
+function carve(m, x0, y0, x1, y1) {
+  if (x0 > x1) { const t = x0; x0 = x1; x1 = t; }
+  if (y0 > y1) { const t = y0; y0 = y1; y1 = t; }
+  for (let y = y0; y <= y1; y++)
+    for (let x = x0; x <= x1; x++)
+      if (x > 0 && y > 0 && x < WORLD_COLS - 1 && y < WORLD_ROWS - 1) m[y * WORLD_COLS + x] = 0;
+}
+function carveRect(m, x, y, w, h) { carve(m, x, y, x + w - 1, y + h - 1); }
+function carveCorridor(m, x0, y0, x1, y1) {
+  if (Math.random() < 0.5) { carve(m, x0, y0, x1, y0); carve(m, x1, y0, x1, y1); }
+  else                     { carve(m, x0, y0, x0, y1); carve(m, x0, y1, x1, y1); }
+}
+
+function nearestRoom(rooms, cx, cy) {
+  let best = null, bd = 1e9;
+  for (const r of rooms) {
+    const d = (r.cx - cx) * (r.cx - cx) + (r.cy - cy) * (r.cy - cy);
+    if (d < bd) { bd = d; best = r; }
+  }
+  return best;
+}
+
+function pickFreeTile(m, awayFromX, awayFromY, minDist) {
+  for (let tries = 0; tries < 100; tries++) {
+    const cx = 1 + (Math.random() * (WORLD_COLS - 2) | 0);
+    const cy = 1 + (Math.random() * (WORLD_ROWS - 2) | 0);
+    if (tileAt(m, cx, cy) !== 0) continue;
+    const [px, py] = tileCenter(cx, cy);
+    if (d2(px, py, awayFromX, awayFromY) < minDist * minDist) continue;
+    return [cx, cy];
+  }
+  return null;
+}
+
+// 4-neighbour BFS over the tile grid starting at (sx, sy). Returns an
+// Int16Array of walking distances in tiles; -1 = unreachable. Uses an array
+// + head index instead of shift() to keep enqueue/dequeue O(1). Runs once
+// per level so the constant overhead is irrelevant.
+function tileBFS(m, sx, sy) {
+  const dist = new Int16Array(WORLD_COLS * WORLD_ROWS).fill(-1);
+  if (tileAt(m, sx, sy) !== 0) return dist;
+  const idxOf = (x, y) => y * WORLD_COLS + x;
+  dist[idxOf(sx, sy)] = 0;
+  const q = [sx, sy];
+  let head = 0;
+  while (head < q.length) {
+    const x = q[head++], y = q[head++];
+    const d = dist[idxOf(x, y)];
+    // 4 neighbours unrolled to avoid a small allocation per step.
+    const cands = [x + 1, y, x - 1, y, x, y + 1, x, y - 1];
+    for (let k = 0; k < 8; k += 2) {
+      const nx = cands[k], ny = cands[k + 1];
+      if (nx < 0 || ny < 0 || nx >= WORLD_COLS || ny >= WORLD_ROWS) continue;
+      const ni = idxOf(nx, ny);
+      if (m[ni] !== 0 || dist[ni] >= 0) continue;
+      dist[ni] = d + 1;
+      q.push(nx, ny);
+    }
+  }
+  return dist;
+}
+
+// True when the room has at most one connected group of floor tiles on the
+// ring of cells immediately outside its footprint — i.e. a single corridor
+// exit, a real cul-de-sac. Walks the perimeter clockwise and counts
+// transitions from non-floor to floor (circularly).
+function isRoomLeaf(r, m) {
+  const x0 = r.x - 1, y0 = r.y - 1;
+  const x1 = r.x + r.w, y1 = r.y + r.h;
+  const tiles = [];
+  for (let x = x0; x <= x1; x++) tiles.push(x, y0);
+  for (let y = y0 + 1; y <= y1; y++) tiles.push(x1, y);
+  for (let x = x1 - 1; x >= x0; x--) tiles.push(x, y1);
+  for (let y = y1 - 1; y > y0; y--) tiles.push(x0, y);
+  const floorAt = (x, y) =>
+    x >= 0 && y >= 0 && x < WORLD_COLS && y < WORLD_ROWS &&
+    m[y * WORLD_COLS + x] === 0;
+  const n = tiles.length / 2;
+  let runs = 0;
+  for (let i = 0; i < n; i++) {
+    const x = tiles[i * 2], y = tiles[i * 2 + 1];
+    const p = (i + n - 1) % n;
+    const px = tiles[p * 2], py = tiles[p * 2 + 1];
+    if (floorAt(x, y) && !floorAt(px, py)) runs++;
+  }
+  return runs <= 1;
+}
+
+// Rank rooms by walking-distance "detour" from the start→exit shortest path.
+// Two BFS passes give us, for every floor tile, distance to start (distS)
+// and distance to exit (distE). For a room centre, dS + dE − baseline is
+// the number of extra steps the player walks when they detour through it.
+// Rooms living deep in cul-de-sacs branch get an extra ×1.4 boost so true
+// dead-ends rank above pass-through rooms with the same detour.
+function offPathRooms(rooms, ax, ay, bx, by) {
+  const distS = tileBFS(map, ax, ay);
+  const distE = tileBFS(map, bx, by);
+  const baseline = distS[by * WORLD_COLS + bx];
+  if (baseline < 0) return [...rooms];   // start and exit not connected
+  const scored = [];
+  for (const r of rooms) {
+    const i = r.cy * WORLD_COLS + r.cx;
+    const dS = distS[i], dE = distE[i];
+    if (dS < 0 || dE < 0) continue;
+    let s = dS + dE - baseline;
+    if (isRoomLeaf(r, map)) s *= 1.4;
+    scored.push({ r, s });
+  }
+  scored.sort((a, b) => b.s - a.s);
+  return scored.map(x => x.r);
+}
+
+// ========================================================================
+// 7. GAME FLOW + MISSIONS
+// ========================================================================
+function goTitle() {
+  mode = 'title';
+  msgText.setText(
+    'TRIGON\n' +
+    'top-down stealth roguelite\n\n' +
+    'WASD move    U fire    I reload    O pickup/use\n' +
+    'enemies see in cones, hear shots and footsteps\n' +
+    'sneak past or fight; off-path rooms hide caches\n\n' +
+    'missions: escape, destroy, rescue, eliminate, hack, heist\n' +
+    'spotted 2s -> alarm arms; hack a terminal to reset\n' +
+    'timer at 0 -> red alarm and endless reinforcements\n\n' +
+    'START (Enter) to begin    best level: ' + best
+  );
+  objText.setText('');
+}
+
+function startRun() {
+  levelN = 1; score = 0;
+  // Fresh narrative state for codename + faction tracking.
+  factionName = pickFrom(FACTIONS);
+  runRoster = buildRoster(12);
+  runHistory = [];
+  player = makePlayer();
+  enterLevel();
+  startMusic();
+}
+
+function enterLevel() {
+  for (const a of [bullets, particles, explosions, pickups, enemies, props, bloodStains, corpses]) a.length = 0;
+  hostage = null; portal = null; mission = null;
+  roomsWithItems.clear();
+  // Size + camera bounds set BEFORE genLevel so allocations match.
+  applyWorldSize(levelN);
+  const lvl = genLevel(levelN);
+  map = lvl.m; mapRooms = lvl.rooms;
+  placePlayerStart();
+  mission = chooseMission(levelN);
+  spawnEnemies();
+  spawnPortal();
+  spawnBarrels();
+  spawnGuaranteedMod();      // first — claims the deepest cul-de-sac for the MOD
+  spawnDeadEndRewards();     // then — fills the next 2-4 off-path rooms with weapon/health/ammo
+  setupMission();
+  mode = 'play';
+  msgText.setText('');
+  if (scene && scene.cameras) {
+    scene.cameras.main.scrollX = player.x - W / 2;
+    scene.cameras.main.scrollY = player.y - H / 2;
+  }
+}
+
+// Mission registry — each entry implements a small contract:
+//   setup(m, n)  spawn props, set targetName, etc.
+//   tick(m)      optional, 1×/frame; return 'fail' to lose immediately.
+//   complete(m)  pure bool — true means the portal is "armed".
+//   objective(m) HUD line.
+//   end(m, win)  optional, on level transition / death — flip runHistory fates.
+//   baseDeadline number or m=>number (seconds) — universal timer source.
+const MISSIONS = {
+  extract: {
+    setup() {},
+    complete: () => true,
+    objective: () => 'ESCAPE',
+    baseDeadline: 75,
+  },
+  destroy: {
+    setup() {},
+    complete: () => enemies.length === 0,
+    objective: () => 'DESTROY ' + factionName + ' — ' + enemies.length,
+    baseDeadline: 110,
+  },
+  rescue: {
+    setup() { spawnHostage(); },
+    tick(m) {
+      // Hostage death = mission failure. Returning 'fail' triggers gameOver.
+      if (hostage && hostage.hp <= 0) return 'fail';
+    },
+    complete: m => m.freed && hostage && hostage.hp > 0
+      && portal && d2(hostage.x, hostage.y, portal.x, portal.y) < 10000,
+    objective: m => 'RESCUE ' + (m.targetName || 'asset') + (m.freed ? ' — escort' : ' — press O'),
+    end(m, win) { if (m.targetName) setFate(m.targetName, win ? 'saved' : 'lost'); },
+    baseDeadline: 95,
+  },
+  eliminate: {
+    setup() { spawnVIP(); },
+    complete: m => m.killed,
+    objective: m => 'ELIMINATE ' + (m.targetName || 'target') + (m.killed ? ' — escape' : ''),
+    end(m, win) { if (m.targetName && !m.killed) setFate(m.targetName, 'lost'); },
+    baseDeadline: 75,
+  },
+  // HEIST — pick up a glowing cache from a far room and carry it to extract.
+  heist: {
+    setup(m) {
+      const spot = pickRoomFP(CLEARANCE * 2.2, CLEARANCE * 1.25);
+      if (!spot) return;
+      const name = 'CACHE ' + pickFrom(NOUNS);
+      m.targetName = name;
+      logTarget(name, 'CACHE');
+      props.push({ kind: 'prize', x: spot.x, y: spot.y, name });
+      m.carrying = false;
+    },
+    complete: m => m.carrying,
+    objective: m => m.carrying
+      ? 'HEIST ' + m.targetName + ' — escape'
+      : 'HEIST — find ' + (m.targetName || 'cache'),
+    end(m, win) { if (m.targetName) setFate(m.targetName, win ? 'extracted' : 'lost'); },
+    baseDeadline: 80,
+  },
+  hack: {
+    setup() { spawnTerminal(); },
+    // Terminal progress now ticks globally in runTick (for non-hack levels
+    // too, since the filler terminal needs to advance for the stealth reset).
+    complete: () => props.every(p => p.kind !== 'terminal' || p.progress >= 1),
+    objective: () => {
+      const terms = props.filter(p => p.kind === 'terminal');
+      const done = terms.filter(p => p.progress >= 1).length;
+      if (done === terms.length) return 'HACK ' + done + '/' + terms.length + ' — escape';
+      let closest = null, bd = Infinity;
+      for (const p of terms) {
+        if (p.progress >= 1) continue;
+        const dd = d2(player.x, player.y, p.x, p.y);
+        if (dd < bd) { bd = dd; closest = p; }
+      }
+      const pct = closest ? (closest.progress * 100 | 0) : 0;
+      return 'HACK ' + done + '/' + terms.length + '  ' + (closest ? closest.name : 'node') + ' ' + pct + '%';
+    },
+    end(m, win) {
+      // Each terminal that didn't reach 100% is marked lost.
+      for (const p of props) {
+        if (p.kind === 'terminal' && p.progress < 1 && p.name) setFate(p.name, 'lost');
+      }
+    },
+    baseDeadline: () => 60 + 25 * props.filter(p => p.kind === 'terminal').length,
+  },
+};
+
+function chooseMission(n) {
+  if (n === 1) return { type: 'extract' };
+  const r = Math.random();
+  if (r < 0.18) return { type: 'extract' };
+  if (r < 0.36) return { type: 'destroy' };
+  if (r < 0.54) return { type: 'rescue', freed: false };
+  if (r < 0.72) return { type: 'eliminate', killed: false };
+  if (r < 0.86) return { type: 'hack' };
+  return { type: 'heist', carrying: false };
+}
+function missionTitle(m) { return 'MISSION: ' + m.type.toUpperCase(); }
+function setupMission() {
+  MISSIONS[mission.type].setup(mission, levelN);
+  setDeadline(mission);
+}
+function missionComplete() { return mission && MISSIONS[mission.type].complete(mission); }
+// Universal deadline: each mission has a baseDeadline (sec). Scaled by level
+// (more pressure at higher levels) and by map area (bigger maps = more time).
+function setDeadline(m) {
+  const def = MISSIONS[m.type].baseDeadline;
+  const base = typeof def === 'function' ? def(m) : def;
+  if (!base) { m.deadline = 0; return; }
+  const lvlMul = Math.max(0.5, 1 - (levelN - 1) * 0.04);
+  const sizeMul = Math.sqrt((WORLD_COLS * WORLD_ROWS) / (60 * 40));
+  // Round seconds up to the next multiple of 10, then convert to ticks (60Hz).
+  m.deadline = Math.ceil(base * lvlMul * sizeMul * 0.5 / 10) * 600;
+  m.deadlineMax = m.deadline;   // Stored so the PC hack can restore full time.
+  m.detTime = 0;
+  m.armed = false;
+  m.alarm = false;
+}
+
+// Alarm: timer expired while detected. Periodic enemy waves keep spawning
+// until the player extracts (next level) or dies. Hacking a terminal clears.
+function startAlarm(m) {
+  m.alarm = true;
+  m.alarmCD = 60;
+  m.alarmAge = 0;
+  // Initial siren hit: long down-sweep wail.
+  blip(900, 0.8, 'sawtooth', 0.18, 200);
+}
+function tickAlarm(m) {
+  m.alarmAge++;
+  if (--m.alarmCD <= 0) {
+    spawnAlarmWave(m);
+    m.alarmCD = Math.max(120, 240 - (m.alarmAge / 8 | 0));
+  }
+  // Klaxon wail: alternating up/down pitch sweep every 30 ticks (~0.5s).
+  if (m.alarmAge % 30 === 0) {
+    const up = (m.alarmAge / 30) % 2 === 0;
+    blip(up ? 350 : 950, 0.5, 'sawtooth', 0.14, up ? 950 : 350);
+  }
+}
+function spawnAlarmWave(m) {
+  if (enemies.length >= 32) return;
+  const tier = Math.min(1, levelN / 10) + Math.min(0.5, m.alarmAge / 1800);
+  const types = ['runner', 'grunt'];
+  if (m.alarmAge > 300) types.push('bruiser');
+  if (m.alarmAge > 600) types.push('sniper');
+  const count = 2 + (Math.random() * 2 | 0);
+  for (let i = 0; i < count; i++) {
+    const free = pickFreeTile(map, player.x, player.y, CLEARANCE * 0.8);
+    if (!free) break;
+    const [ex, ey] = tileCenter(free[0], free[1]);
+    const en = makeEnemy(pickFrom(types), ex, ey, tier);
+    en.state = 'engage';
+    en.alert = 1;
+    en.lastSeen = { x: player.x, y: player.y };
+    enemies.push(en);
+  }
+}
+
+
+function placePlayerStart() {
+  const [px, py] = tileCenter(2, 2);
+  player.x = px; player.y = py;
+  player.vx = 0; player.vy = 0;
+  player.facing = 0;
+}
+
+function spawnEnemies() {
+  const tier = Math.min(1, levelN / 14);
+
+  // Phase 1: guarantee one enemy in every room except the player's start
+  // room. Type is rolled per room so the level still has variety.
+  const types = ['grunt', 'grunt', 'grunt'];
+  if (levelN >= 2) types.push('runner');
+  if (levelN >= 3) types.push('bruiser');
+  if (levelN >= 4) types.push('pyro');
+  if (levelN >= 5) types.push('sniper');
+  if (levelN >= 6) types.push('drone');
+  let placed = 0;
+  for (const r of mapRooms) {
+    const [rx, ry] = tileCenter(r.cx, r.cy);
+    // Skip the player's start room — spawning on top of the player is unfair.
+    if (d2(rx, ry, player.x, player.y) < CLEARANCE * CLEARANCE * 0.4) continue;
+    const id = pickFrom(types);
+    enemies.push(makeEnemy(id, rx, ry, tier));
+    placed++;
   }
 
-  if (consumeAnyPressedControl(scene, ['P1_1', 'P2_1', 'P1_2', 'P2_2', 'START1', 'START2'])) {
-    playSound(scene, 'select');
-    startAmbientMusic(scene);
-    if (menu.cursor === 0) {
-      startMatch(scene);
-    } else if (menu.cursor === 1) {
-      showLeaderboardScreen(scene);
+  // Phase 2: extra enemies based on level budget for higher density.
+  const budget = Math.max(0, 8 + levelN * 3.2 - placed * 1.5);
+  let pts = budget;
+  while (pts > 0) {
+    const r = Math.random();
+    let id;
+    if (levelN >= 5 && r < 0.18) id = 'sniper';
+    else if (levelN >= 3 && r < 0.36) id = 'bruiser';
+    else if (levelN >= 4 && r < 0.50) id = 'pyro';
+    else if (levelN >= 2 && r < 0.66) id = 'runner';
+    else if (levelN >= 6 && r < 0.78) id = 'drone';
+    else id = 'grunt';
+    const free = pickFreeTile(map, player.x, player.y, 280);
+    if (!free) break;
+    const [cx, cy] = free;
+    const [ex, ey] = tileCenter(cx, cy);
+    enemies.push(makeEnemy(id, ex, ey, tier));
+    pts -= ENEMIES[id].score / 5;
+  }
+}
+
+function spawnPortal() {
+  const [px, py] = tileCenter(WORLD_COLS - 3, WORLD_ROWS - 3);
+  portal = { x: px, y: py, t: 0 };
+}
+
+function pickRoomFar(awayX, awayY, minD) {
+  for (let i = 0; i < 60; i++) {
+    const r = pickFrom(mapRooms);
+    if (!r) break;
+    const [px, py] = tileCenter(r.cx, r.cy);
+    if (d2(px, py, awayX, awayY) < minD * minD) continue;
+    return { r, x: px, y: py };
+  }
+  return null;
+}
+// Two-tier pickRoomFar from player coords with fallback distance.
+const pickRoomFP = (a, b) => pickRoomFar(player.x, player.y, a) || pickRoomFar(player.x, player.y, b);
+
+function spawnHostage() {
+  const spot = pickRoomFP(CLEARANCE * 1.9, CLEARANCE);
+  if (!spot) return;
+  const name = takeCodename();
+  hostage = {
+    x: spot.x, y: spot.y, vx: 0, vy: 0,
+    hp: 60, maxHp: 60, freed: false,
+    facing: 0,
+    name,
+  };
+  mission.targetName = name;
+  logTarget(name, 'ASSET');
+  props.push({ kind: 'cage', x: spot.x, y: spot.y });
+}
+
+function spawnVIP() {
+  const spot = pickRoomFP(CLEARANCE * 2.2, CLEARANCE * 1.25);
+  if (!spot) return;
+  const tier = Math.min(1, levelN / 14);
+  const v = makeEnemy('bruiser', spot.x, spot.y, tier);
+  v.hp = (v.hp * 2.2) | 0; v.maxHp = v.hp;
+  v.weapon = makeWeaponInst('burst');
+  v.vip = true;
+  v.name = takeCodename();
+  mission.targetName = v.name;
+  logTarget(v.name, 'TARGET');
+  enemies.push(v);
+}
+
+function spawnTerminal() {
+  // 1-3 terminals; the mission completes only when every one of them is
+  // fully breached. Each tracks its own progress + sound timer.
+  const count = 1 + ((Math.random() * 3) | 0);
+  const usedNouns = new Set();
+  for (let i = 0; i < count; i++) {
+    const spot = pickRoomFP(CLEARANCE * 1.9, CLEARANCE);
+    if (!spot) continue;
+    let noun;
+    do { noun = pickFrom(NOUNS); } while (usedNouns.has(noun) && usedNouns.size < NOUNS.length);
+    usedNouns.add(noun);
+    const name = 'NODE ' + noun;
+    logTarget(name, 'NODE');
+    props.push({ kind: 'terminal', x: spot.x, y: spot.y, name, progress: 0, hackTimer: 0 });
+  }
+}
+
+function spawnBarrels() {
+  const count = 2 + Math.min(8, levelN | 0);
+  for (let i = 0; i < count; i++) {
+    const free = pickFreeTile(map, player.x, player.y, CLEARANCE * 0.8);
+    if (!free) continue;
+    const [cx, cy] = free;
+    const [bx, by] = tileCenter(cx, cy);
+    props.push({ kind: 'barrel', x: bx, y: by, hp: 1 });
+  }
+}
+
+// Drops one MOD pickup at the end of the longest dead-end branch (the
+// off-path room furthest from the start→exit line, far from both endpoints
+// and from the portal). Rewards exploration of the deepest detour.
+function spawnGuaranteedMod() {
+  const path = offPathRooms(mapRooms, 3, 3, WORLD_COLS - 3, WORLD_ROWS - 3);
+  if (!path.length) return;
+  const px0 = portal ? portal.x : 0, py0 = portal ? portal.y : 0;
+  const cl2 = CLEARANCE * CLEARANCE;
+  // Prefer unclaimed rooms far from player + portal; relax in two stages.
+  let pick = null;
+  for (let pass = 0; pass < 3 && !pick; pass++) {
+    for (const r of path) {
+      if (pass < 2 && roomsWithItems.has(r)) continue;
+      const [px, py] = tileCenter(r.cx, r.cy);
+      if (pass === 0 && d2(px, py, player.x, player.y) < cl2) continue;
+      if (pass === 0 && portal && d2(px, py, px0, py0) < cl2 * 0.49) continue;
+      pick = { r, px, py };
+      break;
+    }
+  }
+  if (!pick) return;
+  pickups.push({ x: pick.px, y: pick.py, kind: 'mod', modId: pickFrom(MOD_IDS) });
+  roomsWithItems.add(pick.r);
+}
+
+function spawnDeadEndRewards() {
+  // Pick rooms most off the path between start and extraction. Drop a
+  // weapon/health/ammo pickup at their center to reward exploration.
+  // One item per room — already-claimed rooms are skipped.
+  const path = offPathRooms(mapRooms, 3, 3, WORLD_COLS - 3, WORLD_ROWS - 3);
+  const want = 2 + (Math.random() * 2 | 0);
+  let placed = 0;
+  for (const r of path) {
+    if (placed >= want) break;
+    if (roomsWithItems.has(r)) continue;
+    const [px, py] = tileCenter(r.cx, r.cy);
+    if (d2(px, py, player.x, player.y) < CLEARANCE * CLEARANCE) continue;
+    const roll = Math.random();
+    const canTerm = mission && mission.type !== 'hack';
+    if (canTerm && roll < 0.30) {
+      // Escape terminal — same hack-to-reset behavior as objective terminals.
+      props.push({ kind: 'terminal', x: px, y: py, progress: 0, hackTimer: 0 });
+    } else if (roll < 0.70) {
+      const wid = WEAPON_IDS[1 + (Math.random() * (WEAPON_IDS.length - 1)) | 0];
+      const wInst = makeWeaponInst(wid);
+      if (Math.random() < 0.4) {
+        const ban = WEAPONS[wid].banMods;
+        const mid = pickFrom(ban ? MOD_IDS.filter(m => !ban.includes(m)) : MOD_IDS);
+        MODS[mid].apply(wInst); wInst.mods.push(mid);
+      }
+      pickups.push({ x: px, y: py, kind: 'weapon', wInst });
+    } else if (roll < 0.85) {
+      pickups.push({ x: px, y: py, kind: 'health' });
+    } else if (roll < 0.93) {
+      pickups.push({ x: px, y: py, kind: 'armor' });
     } else {
-      showControlsScreen(scene);
+      pickups.push({ x: px, y: py, kind: 'ammo' });
+    }
+    roomsWithItems.add(r);
+    placed++;
+  }
+}
+
+function nextLevel() {
+  if (mission) MISSIONS[mission.type].end?.(mission, true);
+  levelN++;
+  if (levelN - 1 > best) { best = levelN - 1; saveBest(); }
+  player.hp = player.maxHp;   // full heal between levels
+  enterLevel();
+}
+
+function gameOver() {
+  mode = 'gameover';
+  if (mission) MISSIONS[mission.type].end?.(mission, false);
+  if (levelN - 1 > best) { best = levelN - 1; saveBest(); }
+  for (const h of runHistory) if (h.fate === 'pending') h.fate = 'lost';
+  const log = runHistory.length
+    ? '\n\n' + runHistory.map(h => 'L' + h.level + ' ' + h.fate + ' ' + h.name).join('\n')
+    : '';
+  msgText.setText(
+    'YOU DIED\n\nlevel ' + levelN + '   score ' + (score | 0) + '   best ' + best +
+    log + '\n\nSTART to try again'
+  );
+  objText.setText('');
+}
+
+// ========================================================================
+// 8. PLAYER
+// ========================================================================
+function makePlayer() {
+  return {
+    x: 100, y: 100, vx: 0, vy: 0, facing: 0,
+    hp: PLAYER_BASE_HP, maxHp: PLAYER_BASE_HP,
+    armor: 50, maxArmor: 50,
+    weapons: [makeWeaponInst('pistol', null, 100)],
+    weaponIdx: 0,
+    iframes: 0,
+    burstLeft: 0, burstTimer: 0,
+    deadFlash: 0,
+  };
+}
+
+function curWeapon() { return player.weapons[player.weaponIdx]; }
+
+function makeWeaponInst(id, mods, reserveOverride) {
+  const base = WEAPONS[id];
+  const reserve = (reserveOverride != null) ? reserveOverride : base.mag * 2;
+  const w = { ...base, id, ammo: base.mag, reserve, reloading: 0, cd: 0, mods: [] };
+  if (mods) { for (const mid of mods) { MODS[mid].apply(w); w.mods.push(mid); } }
+  return w;
+}
+
+function applyModToCur(mid) {
+  const w = curWeapon();
+  const ban = w.banMods;
+  if (ban && ban.includes(mid)) {
+    const valid = MOD_IDS.filter(m => !ban.includes(m) && !w.mods.includes(m));
+    if (!valid.length) return;
+    mid = pickFrom(valid);
+  }
+  MODS[mid].apply(w);
+  w.mods.push(mid);
+  w.ammo = w.mag;
+}
+
+
+// Reads WASD, normalizes the joystick, and writes vx/vy/facing on the player.
+function applyPlayerMove() {
+  let dx = 0, dy = 0;
+  if (held.P1_L) dx -= 1; if (held.P1_R) dx += 1;
+  if (held.P1_U) dy -= 1; if (held.P1_D) dy += 1;
+  const sp = PLAYER_BASE_SPEED;
+  if (dx || dy) {
+    const m = Math.hypot(dx, dy);
+    player.vx = dx / m * sp;
+    player.vy = dy / m * sp;
+    player.facing = Math.atan2(dy, dx);
+  } else {
+    player.vx = 0; player.vy = 0;
+  }
+  moveEntity(player, PLAYER_R);
+}
+
+function controlPlayer() {
+  if (player.hp <= 0) return;
+  applyPlayerMove();
+
+  // footstep noise: while moving, leak a low-radius ping every 6 ticks
+  if ((player.vx !== 0 || player.vy !== 0)) {
+    footstepCounter++;
+    if (footstepCounter >= 6) {
+      footstepCounter = 0;
+      emitNoise(player.x, player.y, NOISE_FOOTSTEP, player, 0.4);
+    }
+  } else footstepCounter = 0;
+
+  // Auto-touch pickups: health (only when injured), ammo, and weapons we already own.
+  // New weapon types still require manual O to swap.
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const pk = pickups[i];
+    const dxp = pk.x - player.x, dyp = pk.y - player.y;
+    if (dxp * dxp + dyp * dyp > (PLAYER_R + 14) * (PLAYER_R + 14)) continue;
+    if (pk.kind === 'health' && player.hp < player.maxHp) {
+      takePickup(pk);
+    } else if (pk.kind === 'ammo') {
+      takePickup(pk);
+    } else if (pk.kind === 'weapon' && player.weapons.find(w => w.id === pk.wInst.id)) {
+      takePickup(pk);
     }
   }
-}
-
-function createPauseScreen(scene) {
-  scene.pauseScreen = {};
-  const c = scene.add.container(0, 0);
-  c.setDepth(25);
-  scene.pauseScreen.container = c;
-
-  c.add(scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, COLORS.overlay, 0.82));
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 28, 'PAUSED', {
-        fontFamily: 'monospace', fontSize: '52px', color: '#e1ff00', fontStyle: 'bold',
-      })
-      .setOrigin(0.5),
-  );
-  c.add(
-    scene.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 34, 'PRESS START TO RESUME', {
-        fontFamily: 'monospace', fontSize: '16px', color: '#a8ad8a',
-      })
-      .setOrigin(0.5),
-  );
-
-  c.setVisible(false);
-}
-
-function pauseMatch(scene) {
-  scene.state.phase = 'paused';
-  scene.physics.pause();
-  scene.pauseScreen.container.setVisible(true);
-}
-
-function resumeMatch(scene) {
-  scene.pauseScreen.container.setVisible(false);
-  scene.physics.resume();
-  scene.state.phase = 'playing';
-}
-
-function returnToStart(scene) {
-  scene.state.winner = null;
-  scene.state.nameEntry.letters = [];
-  scene.endGame.container.setVisible(false);
-  refreshLeaderboard(scene);
-  showStartScreen(scene);
-}
-
-function configurePaddleBody(body) {
-  body.setImmovable(true);
-  body.allowGravity = false;
-  body.setCollideWorldBounds(false);
-}
-
-function createBall(scene, x, y, color, startingOwner) {
-  const ball = scene.add.circle(x, y, 7, color, 1);
-  scene.physics.add.existing(ball);
-
-  ball.body.setCircle(7);
-  ball.body.setBounce(1, 1);
-  ball.body.setCollideWorldBounds(false);
-  ball.body.setAllowGravity(false);
-  ball.body.setDrag(0, 0);
-  ball.body.setMaxVelocity(340, 340);
-  ball.glowColor = color;
-  ball.lastTouchedBy = startingOwner;
-  ball.ghostFor = { p1: false, p2: false };
-  ball.previousY = y;
-
-  return ball;
-}
-
-function buildTextBricks(scene) {
-  scene.playfield.bricks.clear(true, true);
-
-  // The bricks spell CDMX — one big word, letters placed by hand.
-  // Grid 34×28: brickX = 69 + col*20, brickY = 137 + row*12.
-  const brickData = [
-    // C
-    [89,233,1],[109,233,2],[129,233,3],[149,233,0],[169,233,1],
-    [69,245,1],[89,245,2],[169,245,2],[189,245,3],[69,257,2],
-    [89,257,3],[69,269,3],[89,269,0],[69,281,0],[89,281,1],
-    [69,293,1],[89,293,2],[69,305,2],[89,305,3],[69,317,3],
-    [89,317,0],[69,329,0],[89,329,1],[69,341,1],[89,341,2],
-    [169,341,2],[189,341,3],[89,353,3],[109,353,0],[129,353,1],
-    [149,353,2],[169,353,3],
-    // D
-    [249,233,1],[269,233,2],[289,233,3],[309,233,0],[329,233,1],
-    [249,245,2],[269,245,3],[329,245,2],[349,245,3],[249,257,3],
-    [269,257,0],[349,257,0],[369,257,1],[249,269,0],[269,269,1],
-    [349,269,1],[369,269,2],[249,281,1],[269,281,2],[349,281,2],
-    [369,281,3],[249,293,2],[269,293,3],[349,293,3],[369,293,0],
-    [249,305,3],[269,305,0],[349,305,0],[369,305,1],[249,317,0],
-    [269,317,1],[349,317,1],[369,317,2],[249,329,1],[269,329,2],
-    [349,329,2],[369,329,3],[249,341,2],[269,341,3],[329,341,2],
-    [349,341,3],[249,353,3],[269,353,0],[289,353,1],[309,353,2],
-    [329,353,3],
-    // M
-    [429,233,2],[449,233,3],[529,233,3],[549,233,0],[429,245,3],
-    [449,245,0],[469,245,1],[509,245,3],[529,245,0],[549,245,1],
-    [429,257,0],[449,257,1],[489,257,3],[529,257,1],[549,257,2],
-    [429,269,1],[449,269,2],[489,269,0],[529,269,2],[549,269,3],
-    [429,281,2],[449,281,3],[529,281,3],[549,281,0],[429,293,3],
-    [449,293,0],[529,293,0],[549,293,1],[429,305,0],[449,305,1],
-    [529,305,1],[549,305,2],[429,317,1],[449,317,2],[529,317,2],
-    [549,317,3],[429,329,2],[449,329,3],[529,329,3],[549,329,0],
-    [429,341,3],[449,341,0],[529,341,0],[549,341,1],[429,353,0],
-    [449,353,1],[529,353,1],[549,353,2],
-    // X
-    [609,233,3],[629,233,0],[709,233,0],[729,233,1],[629,245,1],
-    [649,245,2],[689,245,0],[709,245,1],[629,257,2],[649,257,3],
-    [689,257,1],[709,257,2],[649,269,0],[669,269,1],[689,269,2],
-    [649,281,1],[669,281,2],[689,281,3],[669,293,3],[649,305,3],
-    [669,305,0],[689,305,1],[649,317,0],[669,317,1],[689,317,2],
-    [629,329,0],[649,329,1],[689,329,3],[709,329,0],[629,341,1],
-    [649,341,2],[689,341,0],[709,341,1],[609,353,1],[629,353,2],
-    [709,353,2],[729,353,3],
-  ];
-
-  const colors = [COLORS.brickA, COLORS.brickB, COLORS.brickC, COLORS.brickD];
-
-  for (const [bx, by, ci] of brickData) {
-    const brick = scene.add.rectangle(bx, by, 18, 10, colors[ci], 1);
-    brick.setStrokeStyle(1, COLORS.cell, 0.7);
-    scene.physics.add.existing(brick, true);
-    scene.playfield.bricks.add(brick);
+  // HEIST prize prop — auto-grab when stepped on.
+  if (mission && mission.type === 'heist' && !mission.carrying) {
+    for (let i = props.length - 1; i >= 0; i--) {
+      const pr = props[i];
+      if (pr.kind !== 'prize') continue;
+      if (d2(player.x, player.y, pr.x, pr.y) < (PLAYER_R + 16) * (PLAYER_R + 16)) {
+        mission.carrying = true;
+        props.splice(i, 1);
+        sfxPickup();
+      }
+    }
   }
 
-  scene.state.remainingBricks = scene.playfield.bricks.countActive(true);
-}
-
-function resetBalls(scene) {
-  const [topBall, bottomBall] = scene.playfield.balls;
-
-  topBall.setPosition(GAME_WIDTH / 2 - 110, 170);
-  bottomBall.setPosition(GAME_WIDTH / 2 + 110, GAME_HEIGHT - 170);
-
-  topBall.lastTouchedBy = 'p1';
-  bottomBall.lastTouchedBy = 'p2';
-  topBall.ghostFor = { p1: false, p2: false };
-  bottomBall.ghostFor = { p1: false, p2: false };
-  topBall.previousY = topBall.y;
-  bottomBall.previousY = bottomBall.y;
-  topBall.setAlpha(1);
-  bottomBall.setAlpha(1);
-
-  topBall.body.setVelocity(190, 210);
-  bottomBall.body.setVelocity(-190, -210);
-}
-
-function updatePaddles(scene, delta, time) {
-  const paddleSpeed = 320;
-  const dashSpeed = 1500;
-  const dashDuration = 110;
-  const dashCooldown = 750;
-  const p1Body = scene.playfield.p1Paddle.body;
-  const p2Body = scene.playfield.p2Paddle.body;
-  const deltaSeconds = delta / 1000;
-
-  let p1Dir = 0;
-  if (isControlHeld(scene, 'P1_L')) p1Dir -= 1;
-  if (isControlHeld(scene, 'P1_R')) p1Dir += 1;
-
-  let p2Dir = 0;
-  if (isControlHeld(scene, 'P2_L')) p2Dir -= 1;
-  if (isControlHeld(scene, 'P2_R')) p2Dir += 1;
-
-  tryStartDash(scene, 'p1', 'P1_1', p1Dir, time, dashDuration, dashCooldown);
-  tryStartDash(scene, 'p2', 'P2_1', p2Dir, time, dashDuration, dashCooldown);
-
-  let p1Velocity = p1Dir * paddleSpeed;
-  let p2Velocity = p2Dir * paddleSpeed;
-
-  if (time < scene.state.dash.p1.activeUntil) {
-    p1Velocity = scene.state.dash.p1.dir * dashSpeed;
+  const w = curWeapon();
+  if (w.cd > 0) w.cd--;
+  if (w.reloading > 0) {
+    w.reloading--;
+    if (w.reloading === 0) {
+      const target = w.mag;
+      const need = target - w.ammo;
+      const take = Math.min(need, w.reserve);
+      w.ammo += take;
+      w.reserve -= take;
+    }
   }
-  if (time < scene.state.dash.p2.activeUntil) {
-    p2Velocity = scene.state.dash.p2.dir * dashSpeed;
+  if (player.burstLeft > 0) {
+    if (player.burstTimer > 0) player.burstTimer--;
+    else { fireOnce(player, w); player.burstLeft--; player.burstTimer = 4; }
+  }
+  if (w.reloading === 0 && w.cd === 0 && w.ammo > 0) {
+    let firePressed = false;
+    if (w.trigger === 'auto' && held.P1_1) firePressed = true;
+    else if (w.trigger === 'semi' && consumePress('P1_1')) firePressed = true;
+    else if (w.trigger === 'burst3' && consumePress('P1_1')) {
+      player.burstLeft = 3; player.burstTimer = 0; firePressed = false;
+    }
+    if (firePressed) fireOnce(player, w);
+  }
+  if (w.ammo === 0 && w.reloading === 0 && w.reserve > 0) {
+    w.reloading = w.reload;
+  }
+  if (consumePress('P1_2') && w.ammo < w.mag && w.reloading === 0 && w.reserve > 0) {
+    w.reloading = w.reload;
   }
 
-  p1Body.setVelocityX(0);
-  p2Body.setVelocityX(0);
-
-  scene.playfield.p1Paddle.setX(
-    Phaser.Math.Clamp(
-      scene.playfield.p1Paddle.x + p1Velocity * deltaSeconds,
-      110,
-      GAME_WIDTH - 110,
-    ),
-  );
-  scene.playfield.p2Paddle.setX(
-    Phaser.Math.Clamp(
-      scene.playfield.p2Paddle.x + p2Velocity * deltaSeconds,
-      110,
-      GAME_WIDTH - 110,
-    ),
-  );
-
-  if (typeof p1Body.updateFromGameObject === 'function') {
-    p1Body.updateFromGameObject();
+  // O — pickup, free hostage, swap
+  if (consumePress('P1_3')) {
+    const pk = nearestPickup(player.x, player.y, PICKUP_R + 6);
+    if (pk) takePickup(pk);
+    else if (mission && mission.type === 'rescue' && hostage && !hostage.freed &&
+             d2(player.x, player.y, hostage.x, hostage.y) < 1600) {
+      hostage.freed = true;
+      mission.freed = true;
+      for (let i = props.length - 1; i >= 0; i--) if (props[i].kind === 'cage') props.splice(i, 1);
+      sfxPickup();
+    } else if (player.weapons.length > 1) {
+      player.weaponIdx = (player.weaponIdx + 1) % player.weapons.length;
+    }
   }
-  if (typeof p2Body.updateFromGameObject === 'function') {
-    p2Body.updateFromGameObject();
+
+  if (player.iframes > 0) player.iframes--;
+
+  if (portal && d2(player.x, player.y, portal.x, portal.y) < 576 && missionComplete()) {
+    nextLevel();
   }
 }
 
-function tryStartDash(scene, playerKey, buttonCode, dir, time, duration, cooldown) {
-  if (!scene.controls.pressed[buttonCode]) return;
-  scene.controls.pressed[buttonCode] = false;
-  if (dir === 0) return;
-  const dashState = scene.state.dash[playerKey];
-  if (time < dashState.cooldownUntil) return;
-  dashState.dir = dir;
-  dashState.activeUntil = time + duration;
-  dashState.cooldownUntil = time + cooldown;
-  playSound(scene, 'dash');
-  spawnDashTrail(scene, playerKey, dir);
-}
-
-function spawnDashTrail(scene, playerKey, dir) {
-  const paddle =
-    playerKey === 'p1' ? scene.playfield.p1Paddle : scene.playfield.p2Paddle;
-  const color = playerKey === 'p1' ? COLORS.p1 : COLORS.p2;
-  const trail = scene.add.rectangle(paddle.x, paddle.y, paddle.width, paddle.height, color, 0.6);
-  scene.tweens.add({
-    targets: trail,
-    x: paddle.x - dir * 50,
-    alpha: 0,
-    scaleX: 0.4,
-    duration: 260,
-    onComplete: () => trail.destroy(),
+// Build a bullet record for the bullets array. Centralises the per-property
+// defaults so fireOnce and the multishot bonus stay in lockstep.
+function pushBullet(owner, w, ox, oy, ang, dmg, range, isPlayer, crit) {
+  bullets.push({
+    x: ox, y: oy,
+    vx: Math.cos(ang) * w.speed,
+    vy: Math.sin(ang) * w.speed,
+    life: (range / w.speed) | 0,
+    dmg,
+    owner: isPlayer ? 'p' : 'e',
+    from: owner,
+    pierce: w.pierce,
+    hits: new Set(),
+    bounce: w.bounce,
+    exp: w.exp,
+    vamp: w.vamp,
+    burn: w.burn,
+    burnDmg: w.burnDmg,
+    dotPal: w.dotPal,
+    flame: w.flame,
+    crit,
+    bcol: w.bcol,
   });
 }
 
-function updateBallGhostStates(scene) {
-  const topLine = scene.playfield.p1Paddle.y;
-  const bottomLine = scene.playfield.p2Paddle.y;
+function fireOnce(owner, w) {
+  if (w.ammo <= 0) return;
+  w.ammo--;
+  w.cd = w.rate;
+  const isPlayer = owner === player;
+  const range = w.range;
+  const baseDmg = w.dmg;
+  const aim = owner.aim != null ? owner.aim : owner.facing;
+  const muzzleX = owner.x + Math.cos(aim) * (PLAYER_R + 4);
+  const muzzleY = owner.y + Math.sin(aim) * (PLAYER_R + 4);
+  const n = w.n || 1;
+  for (let i = 0; i < n; i++) {
+    const spr = (Math.random() - 0.5) * 2 * w.spread;
+    const a = aim + spr + (n > 1 ? (i - (n - 1) / 2) * (w.spread * 0.4) : 0);
+    let dmg = baseDmg, crit = false;
+    if (w.crit && Math.random() < w.crit) { dmg *= 2.5; crit = true; }
+    pushBullet(owner, w, muzzleX, muzzleY, a, dmg, range, isPlayer, crit);
+  }
+  particles.push({ x: owner.x, y: owner.y, vx: 0, vy: 0, life: 4, col: 0xfff0a0, r: 5 });
+  if (!w.silent) emitNoise(owner.x, owner.y, NOISE_GUNSHOT, owner, 1);
+  if (isPlayer) sfxShoot(w.id);
+}
 
-  for (const ball of scene.playfield.balls) {
-    const previousY = typeof ball.previousY === 'number' ? ball.previousY : ball.y;
-    const currentY = ball.y;
+// ========================================================================
+// 9. ENEMIES + AI
+// ========================================================================
+function makeEnemy(id, x, y, tier) {
+  const e = ENEMIES[id];
+  const hpScale = 1 + tier * 1.5;
+  return {
+    type: id,
+    x, y, vx: 0, vy: 0, facing: Math.random() * Math.PI * 2,
+    hp: e.hp * hpScale | 0, maxHp: e.hp * hpScale | 0,
+    weapon: makeWeaponInst(e.weapon),
+    state: 'patrol',
+    alert: 0,
+    lastSeen: null,
+    coverTarget: null,
+    patrolTarget: null,
+    patrolWait: 0,
+    aim: 0,
+    knockX: 0, knockY: 0,
+    fly: !!e.fly,
+    fired: 0,
+    stuckTicks: 0,
+    prevX: x, prevY: y,
+    blockedTicks: 0,
+    skin: pickFrom(SKINS),
+    sizeK: 0.85 + Math.random() * 0.30,   // ±15% body size variation
+    armCut: [0, 2, 4][Math.random() * 3 | 0],   // 0=bare, 2=short sleeve, 4=long
+  };
+}
 
-    if (!ball.ghostFor.p1 && previousY >= topLine && currentY < topLine) {
-      ball.ghostFor.p1 = true;
-      animatePenaltyCounter(scene, 'p1');
-      playSound(scene, 'penalty');
-    } else if (ball.ghostFor.p1 && previousY <= topLine && currentY > topLine) {
-      ball.ghostFor.p1 = false;
+function emitNoise(x, y, radius, source, alertGain = 0.6) {
+  for (const e of enemies) {
+    if (e === source || e.fly) continue;
+    if (Math.hypot(e.x - x, e.y - y) < radius) {
+      e.lastSeen = { x, y };
+      if (e.state === 'patrol') e.state = 'alert';
+      e.alert = Math.max(e.alert, alertGain);
     }
-
-    if (!ball.ghostFor.p2 && previousY <= bottomLine && currentY > bottomLine) {
-      ball.ghostFor.p2 = true;
-      animatePenaltyCounter(scene, 'p2');
-      playSound(scene, 'penalty');
-    } else if (
-      ball.ghostFor.p2 &&
-      previousY >= bottomLine &&
-      currentY < bottomLine
-    ) {
-      ball.ghostFor.p2 = false;
-    }
-
-    ball.setAlpha(ball.ghostFor.p1 || ball.ghostFor.p2 ? 0.45 : 1);
-    ball.previousY = currentY;
   }
 }
 
-function checkBallEscape(scene) {
-  for (const ball of scene.playfield.balls) {
-    const escaped =
-      !isFinite(ball.x) || !isFinite(ball.y) ||
-      ball.x < 10 || ball.x > GAME_WIDTH - 10 ||
-      ball.y < 10 || ball.y > GAME_HEIGHT - 10;
-    if (!escaped) {
-      continue;
-    }
-    // Ball slipped out — respawn it near centre heading toward the field
-    const vy = ball.lastTouchedBy === 'p1' ? 220 : -220;
-    const vx = Phaser.Math.Between(-160, 160);
-    ball.setPosition(GAME_WIDTH / 2, GAME_HEIGHT / 2);
-    ball.ghostFor = { p1: false, p2: false };
-    ball.previousY = GAME_HEIGHT / 2;
-    ball.setAlpha(1);
-    ball.body.setVelocity(vx, vy);
-  }
-}
+function updateAI(e) {
+  const def = ENEMIES[e.type];
+  const w = e.weapon;
+  if (w.cd > 0) w.cd--;
+  if (w.reloading > 0) w.reloading--;
+  if (w.reloading === 0 && w.ammo === 0) w.ammo = w.mag;
 
-function canBallCollideWithPaddle(ball, playerKey) {
-  return ball.active && !ball.ghostFor?.[playerKey];
-}
-
-function updateBallTrails(scene, time) {
-  if (time % 3 > 1) {
-    return;
-  }
-
-  for (const ball of scene.playfield.balls) {
-    const trail = scene.add.circle(ball.x, ball.y, 4, ball.glowColor, 0.2);
-    scene.playfield.ballTrails.add(trail);
-
-    scene.tweens.add({
-      targets: trail,
-      alpha: 0,
-      scaleX: 0.2,
-      scaleY: 0.2,
-      duration: 250,
-      onComplete: () => trail.destroy(),
-    });
-  }
-}
-
-function handleBallPaddleCollision(scene, ball, paddle, playerKey) {
-  ball.lastTouchedBy = playerKey;
-  const ballColor = playerKey === 'p1' ? COLORS.p1 : COLORS.p2;
-  ball.setFillStyle(ballColor);
-  ball.glowColor = ballColor;
-
-  const offset = (ball.x - paddle.x) / (paddle.width / 2);
-  const currentSpeed = Math.min(ball.body.velocity.length() + 8, 330);
-  const horizontalVelocity = Phaser.Math.Clamp(offset * 220, -220, 220);
-  const verticalDirection = paddle === scene.playfield.p1Paddle ? 1 : -1;
-  const verticalVelocity = Math.max(120, Math.sqrt(currentSpeed * currentSpeed - horizontalVelocity * horizontalVelocity));
-
-  ball.body.setVelocity(horizontalVelocity, verticalVelocity * verticalDirection);
-}
-
-function handleBallBrickCollision(scene, ball, brick) {
-  if (!brick.active) {
-    return;
-  }
-
-  const brickX = brick.x;
-  const brickY = brick.y;
-  const brickHalfWidth = brick.width / 2;
-  const brickHalfHeight = brick.height / 2;
-  const deltaX = ball.x - brickX;
-  const deltaY = ball.y - brickY;
-  const normalizedX = Math.abs(deltaX) / Math.max(brickHalfWidth, 1);
-  const normalizedY = Math.abs(deltaY) / Math.max(brickHalfHeight, 1);
-  const speedX = Math.abs(ball.body.velocity.x);
-  const speedY = Math.abs(ball.body.velocity.y);
-
-  if (normalizedX > normalizedY) {
-    ball.body.setVelocityX((deltaX >= 0 ? 1 : -1) * Math.max(speedX, 150));
-    ball.setX(
-      brickX +
-        (deltaX >= 0 ? 1 : -1) * (brickHalfWidth + ball.width / 2 + 1),
-    );
+  const dx = player.x - e.x, dy = player.y - e.y;
+  const d = Math.hypot(dx, dy);
+  const ang = Math.atan2(dy, dx);
+  const aDiff = angDiff(ang, e.facing);
+  const inCone = Math.abs(aDiff) < def.cone / 2 && d < def.sight;
+  const los = inCone && hasLOS(map, e.x, e.y, player.x, player.y);
+  if (los) {
+    e.alert += SIGHT_FILL_PER_TICK;
+    e.lastSeen = { x: player.x, y: player.y };
+    if (e.alert >= 1 && e.state !== 'engage') e.state = 'engage';
   } else {
-    ball.body.setVelocityY((deltaY >= 0 ? 1 : -1) * Math.max(speedY, 150));
-    ball.setY(
-      brickY +
-        (deltaY >= 0 ? 1 : -1) * (brickHalfHeight + ball.height / 2 + 1),
-    );
+    e.alert = Math.max(0, e.alert - 0.005);
   }
 
-  if (typeof ball.body.updateFromGameObject === 'function') {
-    ball.body.updateFromGameObject();
-  }
-
-  if (brick.body) {
-    brick.body.enable = false;
-  }
-  scene.playfield.bricks.remove(brick);
-  brick.destroy();
-  scene.state.remainingBricks -= 1;
-
-  if (ball.lastTouchedBy === 'p1') {
-    scene.state.scores.p1 += 1;
-  } else if (ball.lastTouchedBy === 'p2') {
-    scene.state.scores.p2 += 1;
-  }
-
-  spawnBrickBurst(scene, brick.x, brick.y, brick.fillColor);
-  playSound(scene, 'brick');
-  refreshHud(scene);
-  maybeFinishMatch(scene);
-}
-
-function startAmbientMusic(scene) {
-  if (scene.state.musicStarted) {
-    return;
-  }
-  scene.state.musicStarted = true;
-
-  try {
-    const ctx = scene.sound.context;
-    if (!ctx) {
-      return;
+  if (e.state === 'patrol') {
+    if (!e.patrolTarget || e.patrolWait > 0) {
+      if (e.patrolWait > 0) e.patrolWait--;
+      else {
+        // pick a target far away — encourages crossing rooms
+        const free = pickFreeTile(map, e.x, e.y, 220 + Math.random() * 320);
+        if (free) { const [tx, ty] = tileCenter(free[0], free[1]); e.patrolTarget = { x: tx, y: ty }; }
+        e.patrolWait = 20 + (Math.random() * 60 | 0);
+      }
     }
-
-    // Master output
-    const out = ctx.createGain();
-    out.gain.value = 0.18;
-    out.connect(ctx.destination);
-
-    // Feedback delay for space/depth
-    const dly  = ctx.createDelay(2);
-    const dlFb = ctx.createGain();
-    dly.delayTime.value = 0.48;
-    dlFb.gain.value = 0.28;
-    dly.connect(dlFb);
-    dlFb.connect(dly);
-    dlFb.connect(out);
-
-    // Pad — Am7 chord (A2 C3 E3 G3) through chorused detuned oscs + LP filter
-    const padFilt = ctx.createBiquadFilter();
-    padFilt.type = 'lowpass';
-    padFilt.frequency.value = 800;
-    padFilt.Q.value = 1.4;
-    padFilt.connect(out);
-    padFilt.connect(dly);
-
-    // Very slow LFO sweeps the filter cutoff for movement
-    const lfo  = ctx.createOscillator();
-    const lfoG = ctx.createGain();
-    lfo.frequency.value = 0.055;
-    lfoG.gain.value = 430;
-    lfo.connect(lfoG);
-    lfoG.connect(padFilt.frequency);
-    lfo.start();
-
-    [
-      [110, 0, 'sawtooth'], [110, 11, 'sawtooth'], [110, -11, 'sawtooth'],
-      [130.81, 0, 'triangle'], [164.81, 5, 'triangle'], [196, -4, 'triangle'],
-    ].forEach(([f, d, type]) => {
-      const osc = ctx.createOscillator();
-      const g   = ctx.createGain();
-      osc.type = type;
-      osc.frequency.value = f;
-      osc.detune.value = d;
-      g.gain.value = 0.028;
-      osc.connect(g);
-      g.connect(padFilt);
-      osc.start();
-    });
-
-    // Arp — A minor pentatonic, up and back down
-    const ARP  = [220, 261.63, 293.66, 329.63, 392, 440, 392, 329.63, 293.66, 261.63];
-    const STEP = 0.43;
-    const ALEN = ARP.length * STEP;
-
-    function scheduleArp(t0) {
-      ARP.forEach((freq, i) => {
-        const t   = t0 + i * STEP;
-        const osc = ctx.createOscillator();
-        const g   = ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.value = freq;
-        osc.connect(g);
-        g.connect(out);
-        g.connect(dly);
-        g.gain.setValueAtTime(0.001, t);
-        g.gain.linearRampToValueAtTime(0.048, t + 0.018);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + STEP * 0.65);
-        osc.start(t);
-        osc.stop(t + STEP * 0.72);
-      });
-      scene.time.delayedCall((ALEN - 0.06) * 1000, () => scheduleArp(t0 + ALEN));
+    if (e.patrolTarget) {
+      const ddx = e.patrolTarget.x - e.x, ddy = e.patrolTarget.y - e.y;
+      const dd = Math.hypot(ddx, ddy);
+      if (dd < 8) { e.patrolTarget = null; e.patrolWait = 30 + (Math.random() * 50 | 0); }
+      else { e.vx = ddx / dd * def.speed * 0.55; e.vy = ddy / dd * def.speed * 0.55; e.facing = Math.atan2(ddy, ddx); }
+    } else {
+      brk(e, 0.7);
+      e.facing += (Math.random() - 0.5) * 0.04;
+      avoidFacingWall(e);
     }
-
-    // Sub-bass pulse on the beat (55 Hz sine, 120 bpm)
-    const BEAT = 1.0;
-    function scheduleBass(t) {
-      const osc = ctx.createOscillator();
-      const g   = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = 55;
-      osc.connect(g);
-      g.connect(out);
-      g.gain.setValueAtTime(0.28, t);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-      osc.start(t);
-      osc.stop(t + 0.55);
-      scene.time.delayedCall(BEAT * 1000, () => scheduleBass(t + BEAT));
+  } else if (e.state === 'alert') {
+    if (e.lastSeen) {
+      const ddx = e.lastSeen.x - e.x, ddy = e.lastSeen.y - e.y;
+      const dd = Math.hypot(ddx, ddy);
+      e.facing += angDiff(Math.atan2(ddy, ddx), e.facing) * 0.08;
+      if (dd > 30) { e.vx = ddx / dd * def.speed * 0.8; e.vy = ddy / dd * def.speed * 0.8; }
+      else { brk(e, 0.7); }
+    } else {
+      e.facing += (Math.random() - 0.5) * 0.06;
+      brk(e, 0.7);
+      avoidFacingWall(e);
     }
-
-    // Short high-pitched digital tick — every half-beat, offset for syncopation
-    const TICK = 0.5;
-    function scheduleTick(t) {
-      const osc = ctx.createOscillator();
-      const g   = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = 1320;
-      osc.connect(g);
-      g.connect(out);
-      g.gain.setValueAtTime(0.028, t);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.02);
-      osc.start(t);
-      osc.stop(t + 0.025);
-      scene.time.delayedCall(TICK * 1000, () => scheduleTick(t + TICK));
+    if (e.alert <= 0.05) e.state = 'patrol';
+  } else if (e.state === 'engage') {
+    e.facing += angDiff(ang, e.facing) * 0.2;
+    e.aim = ang;
+    const wantRange = preferredRange(e.type);
+    if (w.ammo === 0 && w.reloading === 0) {
+      w.reloading = w.reload | 0;
+      if (Math.random() < def.coverIQ && !e.fly) e.coverTarget = findCoverSpot(e, player);
     }
-
-    const t0 = ctx.currentTime + 0.3;
-    scheduleArp(t0);
-    scheduleBass(t0);
-    scheduleTick(t0 + 0.25);
-  } catch (_) {}
-}
-
-function playSound(scene, type) {
-  try {
-    const ctx = scene.sound && scene.sound.context ? scene.sound.context : new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-
-    const now = ctx.currentTime;
-    if (type === 'brick') {
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(880, now);
-      osc.frequency.exponentialRampToValueAtTime(440, now + 0.08);
-      gain.gain.setValueAtTime(0.18, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-      osc.start(now);
-      osc.stop(now + 0.1);
-    } else if (type === 'penalty') {
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(300, now);
-      osc.frequency.exponentialRampToValueAtTime(80, now + 0.35);
-      gain.gain.setValueAtTime(0.28, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
-      osc.start(now);
-      osc.stop(now + 0.38);
-    } else if (type === 'click') {
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(1200, now);
-      osc.frequency.exponentialRampToValueAtTime(600, now + 0.04);
-      gain.gain.setValueAtTime(0.08, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-      osc.start(now);
-      osc.stop(now + 0.05);
-    } else if (type === 'dash') {
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(180, now);
-      osc.frequency.exponentialRampToValueAtTime(900, now + 0.12);
-      gain.gain.setValueAtTime(0.22, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
-      osc.start(now);
-      osc.stop(now + 0.18);
-    } else if (type === 'select') {
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(700, now);
-      osc.frequency.exponentialRampToValueAtTime(1400, now + 0.08);
-      gain.gain.setValueAtTime(0.12, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-      osc.start(now);
-      osc.stop(now + 0.1);
-    }
-  } catch (_) {}
-}
-
-function spawnBrickBurst(scene, x, y, color) {
-  for (let index = 0; index < 6; index += 1) {
-    const particle = scene.add.rectangle(x, y, 4, 4, color, 1);
-    const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-    const distance = Phaser.Math.Between(16, 42);
-
-    scene.tweens.add({
-      targets: particle,
-      x: x + Math.cos(angle) * distance,
-      y: y + Math.sin(angle) * distance,
-      alpha: 0,
-      angle: Phaser.Math.Between(-90, 90),
-      duration: Phaser.Math.Between(180, 320),
-      onComplete: () => particle.destroy(),
-    });
-  }
-}
-
-function refreshHud(scene) {
-  scene.hud.p1Score.setText(`P1 ${String(scene.state.scores.p1).padStart(2, '0')}`);
-  scene.hud.p2Score.setText(`P2 ${String(scene.state.scores.p2).padStart(2, '0')}`);
-  scene.hud.remaining.setText(`BRICKS ${String(scene.state.remainingBricks).padStart(3, '0')}`);
-}
-
-function animatePenaltyCounter(scene, playerKey) {
-  const text =
-    playerKey === 'p1' ? scene.hud.p1Score : scene.hud.p2Score;
-  const baseColor =
-    playerKey === 'p1'
-      ? scene.hud.scoreColors.p1
-      : scene.hud.scoreColors.p2;
-
-  scene.tweens.killTweensOf(text);
-  text.setColor(scene.hud.scoreColors.penalty);
-  text.setScale(1);
-  text.setAngle(0);
-
-  scene.tweens.add({
-    targets: text,
-    scaleX: 1.12,
-    scaleY: 1.12,
-    angle: playerKey === 'p1' ? -6 : 6,
-    duration: 90,
-    yoyo: true,
-    repeat: 1,
-    onComplete: () => {
-      text.setColor(baseColor);
-      text.setScale(1);
-      text.setAngle(0);
-    },
-  });
-}
-
-function maybeFinishMatch(scene) {
-  const { p1, p2 } = scene.state.scores;
-  const remaining = scene.state.remainingBricks;
-  const leaderScore = Math.max(p1, p2);
-  const trailingScore = Math.min(p1, p2);
-
-  if (remaining === 0 || leaderScore >= trailingScore + remaining) {
-    finishMatch(scene);
-  }
-}
-
-function finishMatch(scene) {
-  if (scene.state.phase !== 'playing') {
-    return;
-  }
-
-  scene.state.phase = 'gameover';
-  scene.physics.pause();
-  scene.hud.status.setText('');
-
-  const p1 = scene.state.scores.p1;
-  const p2 = scene.state.scores.p2;
-  const isTie = p1 === p2;
-
-  scene.state.winner = isTie ? 'draw' : p1 > p2 ? 'p1' : 'p2';
-  scene.state.winnerLabel =
-    scene.state.winner === 'p1'
-      ? 'PLAYER 1'
-      : scene.state.winner === 'p2'
-        ? 'PLAYER 2'
-        : 'DRAW';
-
-  scene.endGame.container.setVisible(true);
-  scene.endGame.summary.setText(
-    isTie
-      ? `${p1}  :  ${p2}`
-      : `${scene.state.winnerLabel}  ${Math.max(p1, p2)}  :  ${Math.min(p1, p2)}`,
-  );
-  scene.endGame.nameLabel.setText(
-    isTie ? 'DRAW TAG' : 'INITIALS',
-  );
-  scene.endGame.saveStatus.setText(scene.state.saveStatus);
-
-  scene.state.nameEntry.row = 0;
-  scene.state.nameEntry.col = 0;
-  scene.state.nameEntry.moveCooldownUntil = 0;
-  scene.state.nameEntry.confirmCooldownUntil = 0;
-  scene.state.nameEntry.lastMoveVector = { x: 0, y: 0 };
-  refreshNameEntry(scene);
-  updateLetterGridHighlight(scene);
-}
-
-function handleNameEntry(scene, time) {
-  const axisX = getHorizontalMenuAxis(scene.controls);
-  const axisY = getVerticalMenuAxis(scene.controls);
-  const entry = scene.state.nameEntry;
-
-  if (
-    time >= entry.moveCooldownUntil &&
-    (axisX !== 0 || axisY !== 0) &&
-    (entry.lastMoveVector.x !== axisX || entry.lastMoveVector.y !== axisY)
-  ) {
-    moveLetterSelection(scene, axisX, axisY);
-    entry.moveCooldownUntil = time + 160;
-    playSound(scene, 'click');
-  }
-
-  if (axisX === 0 && axisY === 0) {
-    entry.lastMoveVector = { x: 0, y: 0 };
-  } else {
-    entry.lastMoveVector = { x: axisX, y: axisY };
-  }
-
-  if (
-    time >= entry.confirmCooldownUntil &&
-    consumeAnyPressedControl(scene, ['P1_1', 'P2_1', 'P1_2', 'P2_2', 'START1', 'START2'])
-  ) {
-    entry.confirmCooldownUntil = time + 180;
-    playSound(scene, 'select');
-    activateCurrentLetter(scene);
-  }
-}
-
-function getHorizontalMenuAxis(controls) {
-  let axis = 0;
-  if (controls.held.P1_L || controls.held.P2_L) {
-    axis -= 1;
-  }
-  if (controls.held.P1_R || controls.held.P2_R) {
-    axis += 1;
-  }
-  return Phaser.Math.Clamp(axis, -1, 1);
-}
-
-function getVerticalMenuAxis(controls) {
-  let axis = 0;
-  if (controls.held.P1_U || controls.held.P2_U) {
-    axis -= 1;
-  }
-  if (controls.held.P1_D || controls.held.P2_D) {
-    axis += 1;
-  }
-  return Phaser.Math.Clamp(axis, -1, 1);
-}
-
-function normalizeIncomingKey(key) {
-  if (typeof key !== 'string' || key.length === 0) {
-    return '';
-  }
-
-  if (key === ' ') {
-    return 'space';
-  }
-
-  return key.toLowerCase();
-}
-
-function isControlHeld(scene, controlCode) {
-  return scene.controls.held[controlCode] === true;
-}
-
-function consumeAnyPressedControl(scene, controlCodes) {
-  for (const controlCode of controlCodes) {
-    if (scene.controls.pressed[controlCode]) {
-      scene.controls.pressed[controlCode] = false;
-      return true;
+    if (w.reloading > 0 && e.coverTarget) {
+      moveTowards(e, e.coverTarget.x, e.coverTarget.y, def.speed * 0.9);
+      if (d2(e.x, e.y, e.coverTarget.x, e.coverTarget.y) < 100) e.coverTarget = null;
+    } else if (los) {
+      if (d > wantRange * 1.2) moveTowards(e, player.x, player.y, def.speed);
+      else if (d < wantRange * 0.6) moveAway(e, player.x, player.y, def.speed * 0.8);
+      else brk(e, 0.5);
+      if (w.cd === 0 && w.ammo > 0 && e.fired >= def.react) {
+        if (w.trigger === 'burst3') {
+          fireOnce(e, w); fireOnce(e, w); fireOnce(e, w);
+        } else fireOnce(e, w);
+      }
+      e.fired++;
+    } else {
+      if (e.lastSeen) moveTowards(e, e.lastSeen.x, e.lastSeen.y, def.speed * 0.8);
+      else { brk(e, 0.7); e.state = 'alert'; }
+      e.fired = Math.max(0, e.fired - 1);
+      if (e.alert < 0.3 && (!e.lastSeen || d2(e.x, e.y, e.lastSeen.x, e.lastSeen.y) < 256)) {
+        e.state = 'alert';
+        e.lastSeen = null;
+      }
     }
   }
 
+  e.vx += e.knockX; e.vy += e.knockY;
+  e.knockX *= 0.6; e.knockY *= 0.6;
+  if (Math.abs(e.knockX) < 0.05) e.knockX = 0;
+  if (Math.abs(e.knockY) < 0.05) e.knockY = 0;
+
+  const blocked = e.fly ? moveEntityFlying(e, def.r) : moveEntity(e, def.r);
+
+  // stuck detection — if not moving for a stretch, ditch the current target
+  // and try a new patrol target. Snipers with cone open up and look around.
+  const moved = Math.hypot(e.x - e.prevX, e.y - e.prevY);
+  if (moved < 0.2 && (e.state === 'patrol' || e.state === 'alert')) {
+    e.stuckTicks++;
+    if (e.stuckTicks > 40) {
+      e.patrolTarget = null;
+      e.lastSeen = null;
+      e.facing += (Math.random() - 0.5) * 1.4;
+      avoidFacingWall(e);
+      e.stuckTicks = 0;
+    }
+  } else e.stuckTicks = 0;
+  if (blocked) e.blockedTicks++; else e.blockedTicks = 0;
+  if (e.blockedTicks > 18 && e.patrolTarget) { e.patrolTarget = null; e.blockedTicks = 0; }
+  e.prevX = e.x; e.prevY = e.y;
+}
+
+function preferredRange(type) {
+  if (type === 'sniper') return 380;
+  if (type === 'bruiser') return 130;
+  if (type === 'pyro') return 110;
+  if (type === 'runner') return 150;
+  if (type === 'drone') return 180;
+  return 220;
+}
+
+// moveTowards turns to face the target; moveAway preserves facing so a
+// backing enemy keeps the player in its cone.
+function moveTowards(e, tx, ty, sp) {
+  const dx = tx - e.x, dy = ty - e.y;
+  const d = Math.hypot(dx, dy) || 1;
+  e.vx = dx / d * sp; e.vy = dy / d * sp;
+  e.facing += angDiff(Math.atan2(dy, dx), e.facing) * 0.2;
+}
+function moveAway(e, tx, ty, sp) {
+  const dx = e.x - tx, dy = e.y - ty;
+  const d = Math.hypot(dx, dy) || 1;
+  e.vx = dx / d * sp; e.vy = dy / d * sp;
+}
+// Velocity brake — multiply vx/vy by k, used everywhere AI idles.
+const brk = (e, k) => { e.vx *= k; e.vy *= k; };
+
+const COVER_OFFSETS = (() => {
+  const o = [];
+  for (let r = 1; r <= 3; r++)
+    for (let a = 0; a < 8; a++)
+      o.push([Math.cos(a / 8 * Math.PI * 2) * r * TILE, Math.sin(a / 8 * Math.PI * 2) * r * TILE]);
+  return o;
+})();
+
+// If the enemy's facing direction has a wall right in front of it, rotate
+// toward the most open angle within an 8-direction sweep. Keeps idle/patrol
+// enemies from "standing watch" against a stone wall.
+const FACE_PROBE = 60;
+function avoidFacingWall(e) {
+  const px = e.x + Math.cos(e.facing) * FACE_PROBE;
+  const py = e.y + Math.sin(e.facing) * FACE_PROBE;
+  if (!isSolid(map, pt(px), pt(py))) return;
+  let bestA = e.facing, bestD = 0;
+  for (let i = 0; i < 8; i++) {
+    const a = i / 8 * Math.PI * 2;
+    let d = 0;
+    while (d < 240) {
+      d += 16;
+      const tx = e.x + Math.cos(a) * d, ty = e.y + Math.sin(a) * d;
+      if (isSolid(map, pt(tx), pt(ty))) break;
+    }
+    if (d > bestD) { bestD = d; bestA = a; }
+  }
+  e.facing += angDiff(bestA, e.facing) * 0.35;
+}
+
+function findCoverSpot(e, target) {
+  let best = null, bestD = 1e9;
+  for (const [ox, oy] of COVER_OFFSETS) {
+    const tx = e.x + ox, ty = e.y + oy;
+    if (tileAt(map, pt(tx), pt(ty)) !== 0) continue;
+    if (hasLOS(map, tx, ty, target.x, target.y)) continue;
+    const d = Math.hypot(ox, oy);
+    if (d < bestD) { bestD = d; best = { x: tx, y: ty }; }
+  }
+  return best;
+}
+
+// ========================================================================
+// 10. PHYSICS
+// ========================================================================
+// Clamp entity to world bounds; returns true if any axis was pushed back.
+function clampPos(e, r) {
+  let c = false;
+  if (e.x < r) { e.x = r; c = true; }
+  if (e.y < r) { e.y = r; c = true; }
+  if (e.x > WORLD_W - r) { e.x = WORLD_W - r; c = true; }
+  if (e.y > WORLD_H - r) { e.y = WORLD_H - r; c = true; }
+  return c;
+}
+
+function moveEntity(e, r) {
+  let blocked = false;
+  let nx = e.x + e.vx;
+  if (collidesWalls(nx, e.y, r)) { nx = e.x; e.vx = 0; blocked = true; }
+  e.x = nx;
+  let ny = e.y + e.vy;
+  if (collidesWalls(e.x, ny, r)) { ny = e.y; e.vy = 0; blocked = true; }
+  e.y = ny;
+  return clampPos(e, r) || blocked;
+}
+
+function moveEntityFlying(e, r) {
+  e.x += e.vx; e.y += e.vy;
+  clampPos(e, r);
   return false;
 }
 
-function moveLetterSelection(scene, axisX, axisY) {
-  const entry = scene.state.nameEntry;
-
-  if (axisY !== 0) {
-    entry.row = Phaser.Math.Wrap(entry.row + axisY, 0, LETTER_GRID.length);
-    entry.col = Math.min(entry.col, LETTER_GRID[entry.row].length - 1);
+function collidesWalls(x, y, r) {
+  const pts = [
+    [x - r, y - r], [x + r, y - r], [x - r, y + r], [x + r, y + r],
+    [x, y],
+  ];
+  for (const [px, py] of pts) {
+    if (isSolid(map, pt(px), pt(py))) return true;
   }
-
-  if (axisX !== 0) {
-    entry.col = Phaser.Math.Wrap(entry.col + axisX, 0, LETTER_GRID[entry.row].length);
-  }
-
-  updateLetterGridHighlight(scene);
+  return false;
 }
 
-function updateLetterGridHighlight(scene) {
-  const entry = scene.state.nameEntry;
-  for (const item of scene.endGame.gridLabels) {
-    const active = item.row === entry.row && item.col === entry.col;
-    item.cell.setFillStyle(active ? COLORS.accent : COLORS.cell, active ? 1 : 0.95);
-    item.cell.setStrokeStyle(2, active ? COLORS.white : COLORS.frame, active ? 1 : 0.8);
-    item.label.setColor(active ? '#04110b' : '#f7ffd8');
-  }
-}
-
-function activateCurrentLetter(scene) {
-  const entry = scene.state.nameEntry;
-  const selectedValue = LETTER_GRID[entry.row][entry.col];
-
-  if (selectedValue === 'DEL') {
-    entry.letters.pop();
-    refreshNameEntry(scene);
-    return;
-  }
-
-  if (selectedValue === 'END') {
-    if (entry.letters.length === 0) {
-      scene.endGame.saveStatus.setText('Pick at least one character before saving.');
-      return;
+function updateBullets() {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx; b.y += b.vy;
+    b.life--;
+    let dead = false;
+    if (b.life <= 0) dead = true;
+    if (!dead && isSolid(map, pt(b.x), pt(b.y))) {
+      if (b.bounce > 0) {
+        b.bounce--;
+        b.x -= b.vx; b.y -= b.vy;
+        if (isSolid(map, pt(b.x + b.vx), pt(b.y))) b.vx = -b.vx;
+        else b.vy = -b.vy;
+      } else {
+        if (b.exp) explode(b.x, b.y, b.exp, b.dmg, b.owner);
+        dead = true;
+      }
     }
-
-    submitHighScore(scene);
-    return;
-  }
-
-  if (entry.letters.length >= WINNING_NAME_LENGTH) {
-    entry.letters.shift();
-  }
-
-  entry.letters.push(selectedValue);
-  refreshNameEntry(scene);
-}
-
-function refreshNameEntry(scene) {
-  const letters = scene.state.nameEntry.letters.slice();
-  while (letters.length < WINNING_NAME_LENGTH) {
-    letters.push('_');
-  }
-  scene.endGame.nameValue.setText(letters.join(' '));
-}
-
-function submitHighScore(scene) {
-  if (scene.state.phase !== 'gameover') {
-    return;
-  }
-
-  const initials = scene.state.nameEntry.letters.join('').slice(0, WINNING_NAME_LENGTH) || '???';
-  const winningScore =
-    scene.state.winner === 'p1'
-      ? scene.state.scores.p1
-      : scene.state.winner === 'p2'
-        ? scene.state.scores.p2
-        : scene.state.scores.p1;
-
-  const entry = {
-    name: initials,
-    winner: scene.state.winnerLabel,
-    score: winningScore,
-    detail: `${scene.state.scores.p1}-${scene.state.scores.p2}`,
-    savedAt: new Date().toISOString().slice(0, 10),
-  };
-
-  scene.state.saveStatus = `Saved ${initials}! Press START to play again.`;
-  scene.endGame.saveStatus.setText(scene.state.saveStatus);
-  scene.state.phase = 'saved';
-
-  persistHighScore(entry)
-    .then((nextScores) => {
-      scene.state.highScores = nextScores;
-      refreshLeaderboard(scene);
-    })
-    .catch(() => {
-      scene.state.saveStatus = 'Could not save the score, but the game result stands.';
-      if (scene.state.phase === 'saved') {
-        scene.endGame.saveStatus.setText(scene.state.saveStatus);
+    if (!dead) {
+      // barrels (props) can be hit by any bullet
+      for (const p of props) {
+        if (p.kind !== 'barrel' || p.hp <= 0) continue;
+        const r = 14;
+        if (d2(b.x, b.y, p.x, p.y) < r * r) {
+          p.hp = 0;
+          if (b.exp) explode(b.x, b.y, b.exp, b.dmg * 0.6, b.owner);
+          dead = true;
+          break;
+        }
       }
+    }
+    if (!dead) {
+      if (b.owner === 'p') {
+        for (const e of enemies) {
+          if (e.hp <= 0) continue;
+          if (b.hits.has(e)) continue;
+          const r = ENEMIES[e.type].r + 4;
+          if (d2(b.x, b.y, e.x, e.y) < r * r) {
+            damageEnemy(e, b);
+            b.hits.add(e);
+            if (b.exp) { explode(b.x, b.y, b.exp, b.dmg * 0.6, b.owner); dead = true; }
+            else if (b.pierce > 0) b.pierce--;
+            else dead = true;
+            if (dead) break;
+          }
+        }
+      } else {
+        // hostage takes collateral damage
+        if (!dead && hostage && hostage.hp > 0) {
+          const r = 12;
+          if (d2(b.x, b.y, hostage.x, hostage.y) < r * r) {
+            hostage.hp -= b.dmg;
+            particles.push({ x: hostage.x, y: hostage.y, vx: 0, vy: 0, life: 6, col: 0xff5060, r: 8 });
+            dead = true;
+          }
+        }
+        if (!dead && player.hp > 0 && player.iframes <= 0) {
+          const r = PLAYER_R + 3;
+          if (d2(b.x, b.y, player.x, player.y) < r * r) {
+            damagePlayer(b.dmg);
+            if (b.exp) explode(b.x, b.y, b.exp, b.dmg * 0.5, b.owner);
+            dead = true;
+          }
+        }
+      }
+    }
+    if (!dead && (b.x < 0 || b.x > WORLD_W || b.y < 0 || b.y > WORLD_H)) dead = true;
+    if (dead) bullets.splice(i, 1);
+  }
+}
+
+function explode(x, y, radius, dmg, owner) {
+  explosions.push({ x, y, r: 0, max: radius, life: 14 });
+  for (const e of enemies) {
+    if (e.hp <= 0) continue;
+    const dd = Math.hypot(e.x - x, e.y - y);
+    if (dd < radius) damageEnemy(e, { dmg: dmg * (1 - dd / radius), vx: e.x - x, vy: e.y - y, knock: 5, vamp: 0 });
+  }
+  // chain barrels
+  for (const p of props) {
+    if (p.kind !== 'barrel' || p.hp <= 0) continue;
+    if (d2(p.x, p.y, x, y) < radius * radius) p.hp = 0;
+  }
+  // hostage damage
+  if (hostage && hostage.hp > 0) {
+    const dd = Math.hypot(hostage.x - x, hostage.y - y);
+    if (dd < radius) hostage.hp -= dmg * 0.5 * (1 - dd / radius);
+  }
+  if (player.hp > 0 && player.iframes <= 0) {
+    const dd = Math.hypot(player.x - x, player.y - y);
+    if (dd < radius) damagePlayer(dmg * (1 - dd / radius));
+  }
+  blip(70, 0.25, 'sawtooth', 0.09);
+  noise(0.20, 0.07, 200);
+}
+
+// ========================================================================
+// 11. COMBAT
+// ========================================================================
+function damageEnemy(e, b) {
+  const dmg = b.dmg | 0;
+  e.hp -= dmg;
+  if (b.knock) {
+    const a = Math.atan2(b.vy, b.vx);
+    e.knockX += Math.cos(a) * b.knock;
+    e.knockY += Math.sin(a) * b.knock;
+  }
+  e.alert = 1; e.state = 'engage'; e.lastSeen = { x: player.x, y: player.y };
+  // Visceral feedback on every hit: spray blood + a crunchy impact tone.
+  // Crits show a yellow flash particle on top of the red spray.
+  bloodBurst(e.x, e.y, b.crit ? 10 : 5, b.vx, b.vy, b.crit);
+  if (b.crit) {
+    particles.push({ x: e.x, y: e.y, vx: 0, vy: 0, life: 8, col: 0xffe040, r: 10 });
+    blip(1400, 0.06, 'square', 0.06);
+    blip(1900, 0.04, 'triangle', 0.04);
+  }
+  if (e.hp > 0) { blip(70, 0.05, 'sawtooth', 0.05); noise(0.05, 0.06, 700); }
+  if (b.vamp) {
+    const heal = dmg * b.vamp;
+    player.hp = Math.min(player.maxHp, player.hp + heal);
+  }
+  if (b.burn) {
+    if ((e.burn || 0) < b.burn) e.burn = b.burn;
+    if ((e.burnDmg || 0) < b.burnDmg) e.burnDmg = b.burnDmg;
+    e.dotPal = b.dotPal;
+  }
+  if (e.hp <= 0) killEnemy(e);
+}
+
+function killEnemy(e) {
+  // Big gory burst, ring shockwave, and a corpse that stays on the floor.
+  bloodBurst(e.x, e.y, 18, 0, 0, true);
+  particles.push({ x: e.x, y: e.y, vx: 0, vy: 0, life: 18, col: ENEMIES[e.type].col, r: 16, ring: true });
+  spawnCorpse(e);
+  score += ENEMIES[e.type].score * (e.vip ? 4 : 1);
+  if (e.vip && mission && mission.type === 'eliminate') {
+    mission.killed = true;
+    if (e.name) setFate(e.name, 'killed');
+  }
+  const r = Math.random();
+  if (e.vip || r < 0.22) pickups.push({ x: e.x, y: e.y, kind: 'health' });
+  else if (r < 0.55) {
+    // drop the enemy's own weapon (clean instance, fresh ammo)
+    const wInst = makeWeaponInst(e.weapon.id);
+    pickups.push({ x: e.x, y: e.y, kind: 'weapon', wInst });
+  }
+  blip(180, 0.18, 'sawtooth', 0.08, 70);
+  noise(0.14, 0.07, 450);
+}
+
+function damagePlayer(d) {
+  if (player.iframes > 0) return;
+  if (player.armor > 0) {
+    const a = Math.min(player.armor, d);
+    player.armor -= a; d -= a;
+  }
+  player.hp -= d;
+  player.iframes = 18;
+  player.deadFlash = 8;
+  bloodBurst(player.x, player.y, 7, 0, 0);
+  if (player.hp <= 0) {
+    player.hp = 0;
+    bloodBurst(player.x, player.y, 26, 0, 0, true);
+    sfxDie();
+    gameOver();
+  } else {
+    blip(140, 0.10, 'sawtooth', 0.07);
+    noise(0.07, 0.05, 800);
+  }
+}
+
+// ========================================================================
+// 12. PICKUPS, ALTAR, HOSTAGE, PROPS
+// ========================================================================
+function nearestPickup(x, y, r) {
+  let best = null, bestD = r * r;
+  for (const p of pickups) {
+    const d = d2(p.x, p.y, x, y);
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  return best;
+}
+
+function takePickup(p) {
+  if (p.kind === 'health') {
+    player.hp = Math.min(player.maxHp, player.hp + 30);
+    sfxPickup();
+  } else if (p.kind === 'armor') {
+    player.armor = player.maxArmor;
+    sfxPickup();
+  } else if (p.kind === 'ammo') {
+    for (const w of player.weapons) {
+      w.reserve += WEAPONS[w.id].mag;
+    }
+    sfxPickup();
+  } else if (p.kind === 'weapon') {
+    // Already own this weapon? treat as ammo refill: 1x mag.
+    const owned = player.weapons.find(w => w.id === p.wInst.id);
+    if (owned) {
+      owned.reserve += WEAPONS[p.wInst.id].mag;
+      sfxPickup();
+    } else if (player.weapons.length < 2) {
+      player.weapons.push(p.wInst);
+      player.weaponIdx = player.weapons.indexOf(p.wInst);
+      sfxPickup();
+    } else {
+      // Swap: drop the currently held weapon at the player's feet.
+      const old = player.weapons[player.weaponIdx];
+      pickups.push({ x: player.x, y: player.y, kind: 'weapon', wInst: old });
+      player.weapons[player.weaponIdx] = p.wInst;
+      player.weaponIdx = player.weapons.indexOf(p.wInst);
+      sfxPickup();
+    }
+  } else if (p.kind === 'mod') {
+    applyModToCur(p.modId);
+    sfxPickup();
+  }
+  const i = pickups.indexOf(p); if (i >= 0) pickups.splice(i, 1);
+}
+
+function updateHostage() {
+  if (!hostage) return;
+  // hp<=0 → MISSIONS.rescue.tick returns 'fail' (handled in runTick).
+  if (hostage.hp <= 0) return;
+  if (!hostage.freed) return;
+  const dx = player.x - hostage.x, dy = player.y - hostage.y;
+  const d = Math.hypot(dx, dy) || 1;
+  if (d > 60) {
+    hostage.vx = dx / d * 1.8;
+    hostage.vy = dy / d * 1.8;
+    hostage.facing = Math.atan2(dy, dx);
+  } else brk(hostage, 0.7);
+  moveEntity(hostage, 10);
+}
+
+function updateProps() {
+  for (let i = props.length - 1; i >= 0; i--) {
+    const p = props[i];
+    if (p.kind === 'barrel' && p.hp <= 0) {
+      explode(p.x, p.y, BARREL_BLAST, BARREL_DMG, 'p');
+      props.splice(i, 1);
+    }
+  }
+}
+
+// ========================================================================
+// 13. TICK LOOP — fixed timestep, dispatched by mode (title/play/altar/dead)
+// ========================================================================
+function runTick() {
+  if (mode === 'title' || mode === 'gameover') {
+    if (consumePress('START1')) startRun();
+    return;
+  }
+  controlPlayer();
+  for (const e of enemies) {
+    updateAI(e);
+    if (e.burn > 0) {
+      const cols = e.dotPal || FIRE_COLS;
+      particles.push({
+        x: e.x + (Math.random() - 0.5) * 14,
+        y: e.y - 4 + (Math.random() - 0.5) * 8,
+        vx: (Math.random() - 0.5) * 0.6,
+        vy: -0.7 - Math.random() * 0.6,
+        life: 18,
+        col: cols[(Math.random() * 4) | 0],
+        r: 3 + Math.random() * 2,
+      });
+      if ((e.burn & 7) === 0) {
+        e.hp -= e.burnDmg;
+        if (e.hp <= 0) killEnemy(e);
+      }
+      e.burn--;
+    }
+  }
+  for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) enemies.splice(i, 1);
+  updateBullets();
+  updateProps();
+  updateHostage();
+  updateParticles();
+  if (portal) portal.t++;
+  // Mission-level hooks: per-mission tick (fail trigger) + stealth-driven
+  // timer (only counts down while at least one enemy is in `engage`).
+  // Timer reaching zero starts ALARM mode rather than instant gameOver —
+  // alarm tick keeps spawning waves until extract or death.
+  if (mission && mode === 'play') {
+    const M = MISSIONS[mission.type];
+    if (M.tick && M.tick(mission) === 'fail') { gameOver(); return; }
+    // Universal terminal progression — works for hack-mission objectives AND
+    // the filler terminal in non-hack levels. Completing any terminal also
+    // breaches the PC: timer reset to max + all enemies pacified.
+    let detected = false;
+    for (const e of enemies) if (e.state === 'engage') { detected = true; break; }
+    for (const t of props) {
+      if (t.kind !== 'terminal' || t.progress >= 1) continue;
+      if (d2(player.x, player.y, t.x, t.y) >= 2500) continue;
+      t.progress = Math.min(1, t.progress + 1 / HACK_DURATION);
+      t.hackTimer = (t.hackTimer + 1) % 30;
+      if (t.hackTimer === 0) { emitNoise(t.x, t.y, 200, null, 0.7); blip(1500, 0.05, 'square', 0.025); }
+      if (t.progress >= 1) {
+        if (t.name) setFate(t.name, 'breached');
+        // PC reset: full timer + pacify all enemies + alarm cleared.
+        mission.deadline = mission.deadlineMax;
+        mission.detTime = 0;
+        mission.armed = false;
+        mission.alarm = false;
+        for (const e of enemies) { e.state = 'patrol'; e.alert = 0; e.lastSeen = null; }
+        blip(440, 0.3, 'sine', 0.08);
+        detected = false;
+      }
+    }
+    // 2s grace: detection has to persist before the timer arms. Once armed,
+    // the timer never pauses — only a terminal hack stops the bleed.
+    mission.detTime = detected ? mission.detTime + 1 : 0;
+    if (!mission.armed && mission.detTime >= 120) mission.armed = true;
+    if (mission.deadline > 0 && mission.armed) {
+      if (--mission.deadline <= 0) startAlarm(mission);
+    }
+    if (mission.alarm) tickAlarm(mission);
+  }
+}
+
+// Permanent dark-red stain at (x, y). FIFO cap so memory stays bounded on
+// long, kill-heavy levels. Cleared on level change.
+function dropStain(x, y, big) {
+  if (bloodStains.length > 360) bloodStains.shift();
+  bloodStains.push({
+    x, y,
+    r: big ? 9 + Math.random() * 6 : 3 + Math.random() * 4,
+    col: 0x6a0010 + ((Math.random() * 0x10) | 0),
+    a: 0.5 + Math.random() * 0.3,
+  });
+}
+
+// Push the dead enemy's body onto the corpses list so it keeps being drawn
+// (faded, with no AI/collision) until the next level. Capped FIFO.
+function spawnCorpse(e) {
+  if (e.fly) return;
+  if (corpses.length > 100) corpses.shift();
+  corpses.push({
+    x: e.x, y: e.y,
+    type: e.type,
+    facing: e.facing + (Math.random() - 0.5) * 1.0,
+    vip: !!e.vip,
+    skin: e.skin,
+    sizeK: e.sizeK,
+    armCut: e.armCut,
+  });
+}
+
+// Spawn a fan of red blood specks flying outward from (x, y). The burst
+// direction follows (dirX, dirY) — usually the bullet velocity — with a
+// wide angular spread. `big` makes the burst denser/faster (used for kills).
+// Blood-flagged particles drop a permanent stain when their life expires
+// (see updateParticles).
+function bloodBurst(x, y, n, dirX, dirY, big) {
+  const baseAng = Math.atan2(dirY || 0, dirX || 0);
+  for (let i = 0; i < n; i++) {
+    const a = baseAng + (Math.random() - 0.5) * 1.8;
+    const sp = (big ? 3 : 1.4) + Math.random() * (big ? 3 : 2);
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 14 + (Math.random() * 14 | 0),
+      max: 28,
+      col: 0xff2040,
+      r: 2 + Math.random() * 2,
+      grav: 0.18,
+      blood: true,
     });
-}
-
-function refreshLeaderboard(scene) {
-  const lines = scene.state.highScores.length
-    ? scene.state.highScores.map((entry, index) => {
-        const rank = String(index + 1).padStart(2, '0');
-        const score = String(entry.score).padStart(2, '0');
-        return `${rank} ${entry.name.padEnd(3, ' ')} ${score} ${entry.winner}`;
-      })
-    : ['NO SAVED SCORES YET'];
-
-  scene.endGame.leaderboard.setText(lines.join('\n'));
-}
-
-async function persistHighScore(entry) {
-  const existing = await loadHighScores();
-  const nextScores = existing
-    .concat(entry)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-      return left.savedAt < right.savedAt ? 1 : -1;
-    })
-    .slice(0, MAX_HIGH_SCORES);
-
-  await storageSet(STORAGE_KEY, nextScores);
-  return nextScores;
-}
-
-async function loadHighScores() {
-  const result = await storageGet(STORAGE_KEY);
-  if (!result.found || !Array.isArray(result.value)) {
-    return [];
   }
-
-  return result.value.filter(isHighScoreEntry).slice(0, MAX_HIGH_SCORES);
+  // Initial smear at the burst origin.
+  dropStain(x, y, big);
 }
 
-function isHighScoreEntry(value) {
-  return (
-    value &&
-    typeof value === 'object' &&
-    typeof value.name === 'string' &&
-    typeof value.winner === 'string' &&
-    typeof value.score === 'number' &&
-    typeof value.detail === 'string' &&
-    typeof value.savedAt === 'string'
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life--;
+    p.x += p.vx;
+    p.y += p.vy;
+    if (p.grav) p.vy += p.grav;
+    if (p.life <= 0) {
+      // Blood specks leave a stain where they land.
+      if (p.blood) dropStain(p.x, p.y, false);
+      particles.splice(i, 1);
+    }
+  }
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const e = explosions[i];
+    e.life--;
+    e.r = e.max * (1 - e.life / 14);
+    if (e.life <= 0) explosions.splice(i, 1);
+  }
+}
+
+// ========================================================================
+// 14. RENDER — drawing helpers + per-frame draw passes
+// ========================================================================
+// Universal helpers: caller passes the target Graphics (g for world, gHud for HUD).
+const fc = (G, c, a, x, y, r) => G.fillStyle(c, a).fillCircle(x, y, r);
+const fr = (G, c, a, x, y, w, h) => G.fillStyle(c, a).fillRect(x, y, w, h);
+const sc = (G, lw, c, a, x, y, r) => G.lineStyle(lw, c, a).strokeCircle(x, y, r);
+const sr = (G, lw, c, a, x, y, w, h) => G.lineStyle(lw, c, a).strokeRect(x, y, w, h);
+const ln = (G, lw, c, a, x1, y1, x2, y2) => G.lineStyle(lw, c, a).lineBetween(x1, y1, x2, y2);
+// Polygon: pts is an array of [x, y]; fills with color/alpha.
+function polyFill(G, c, a, pts) {
+  G.fillStyle(c, a);
+  G.beginPath();
+  G.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) G.lineTo(pts[i][0], pts[i][1]);
+  G.closePath(); G.fillPath();
+}
+// Track + fill horizontal bar. Used for HP / mag / progress displays.
+function bar(G, x, y, w, h, frac, trackCol, fillCol) {
+  fr(G, trackCol, 1, x, y, w, h);
+  fr(G, fillCol, 1, x, y, w * frac, h);
+}
+function polyStroke(G, lw, c, a, pts, closed) {
+  G.lineStyle(lw, c, a);
+  G.beginPath();
+  G.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) G.lineTo(pts[i][0], pts[i][1]);
+  if (closed) G.closePath();
+  G.strokePath();
+}
+// Stroke a partial circular arc starting at the top, sweeping clockwise.
+// Used for both reload progress around the player and hack progress on the
+// terminal — same shape, different color/scale.
+function arcRing(x, y, r, frac, lw, col) {
+  g.lineStyle(lw, col, 1);
+  g.beginPath();
+  g.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2, false);
+  g.strokePath();
+}
+
+function render() {
+  g.clear();
+  gHud.clear();
+  if (mode === 'title' || mode === 'gameover') {
+    if (mode === 'title') drawMap();
+    return;
+  }
+  drawMap();
+  drawBloodStains();   // permanent floor splatter
+  drawCorpses();       // dead enemies stay rendered beneath live entities
+  drawProps();
+  drawPickups();
+  drawPortal();
+  drawHostage();
+  drawEnemies();
+  drawPlayer();
+  drawBullets();
+  drawExplosions();
+  drawParticles();
+  drawSightCones();
+  if (mission && mission.alarm) {
+    const pulse = 0.10 + 0.22 * Math.abs(Math.sin(frameCount * 0.20));
+    fr(gHud, 0xff0030, pulse, 0, 0, W, H);
+  }
+  drawHud();
+  drawObjective();
+}
+
+function drawMap() {
+  const cam = scene.cameras.main;
+  const x0 = Math.max(0, pt(cam.scrollX));
+  const y0 = Math.max(0, pt(cam.scrollY));
+  const cx1 = ((cam.scrollX + W) / TILE | 0) + 2;
+  const cy1 = ((cam.scrollY + H) / TILE | 0) + 2;
+  const x1 = map ? Math.min(WORLD_COLS, cx1) : cx1;
+  const y1 = map ? Math.min(WORLD_ROWS, cy1) : cy1;
+  // Floor: hash-noise tint per tile, with occasional flecks/dots.
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    if (map && isSolid(map, x, y)) continue;
+    const h = ((x * 73856093) ^ (y * 19349663)) & 0xff;
+    fr(g, 0x10171f + (h & 0x1f), 1, x * TILE, y * TILE, TILE, TILE);
+    if ((h & 0x07) === 0) fr(g, 0x222a35, 0.4, x * TILE + 6, y * TILE + 12, 4, 2);
+    if ((h & 0x1f) === 5) fc(g, 0x1c2630, 0.5, x * TILE + 28, y * TILE + 22, 3);
+  }
+  // Grid lines (single style for both axes).
+  g.lineStyle(1, 0x1a2030, 0.5);
+  for (let y = y0; y <= y1; y++) g.lineBetween(x0 * TILE, y * TILE, x1 * TILE, y * TILE);
+  for (let x = x0; x <= x1; x++) g.lineBetween(x * TILE, y0 * TILE, x * TILE, y1 * TILE);
+  if (!map) return;
+  // Walls.
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    if (!isSolid(map, x, y)) continue;
+    const px = x * TILE, py = y * TILE;
+    fr(g, 0x2a3344, 1, px, py, TILE, TILE);
+    sr(g, 1, 0x4a5870, 1, px + 1, py + 1, TILE - 2, TILE - 2);
+  }
+}
+
+// Procedural top-down character sprite (Hotline Miami spec). Layers in
+// draw order: torso ellipse → arms (quadratic bezier) → weapon → head
+// (outer helmet + inner visor). Local frame: front = -y, right = +x.
+// `pal` carries the palette { torso, arm, headOuter, headInner }.
+// `weaponFn(wx, wy, wang)` if provided is invoked at the muzzle root.
+// Reusable for the player and every enemy.
+function drawPerson(x, y, ang, pal, weaponFn, a, k) {
+  a = a == null ? 1 : a;
+  k = k || 1;
+  const cs = Math.cos(ang), sn = Math.sin(ang);
+  // Local (lx, ly) → world: rotates so local -y aligns with `ang`, scaled by k.
+  const T = (lx, ly) => [x + (-lx * sn - ly * cs) * k, y + (lx * cs - ly * sn) * k];
+  // Torso — 16-vertex ellipse, wider than tall (rx=13, ry=10).
+  const tpts = [];
+  for (let i = 0; i < 16; i++) {
+    const t = i / 16 * Math.PI * 2;
+    tpts.push(T(13 * Math.cos(t), 10 * Math.sin(t)));
+  }
+  polyFill(g, pal.torso, a, tpts);
+  // Arms — quadratic bezier from shoulder to grip, sampled in 4 segments.
+  // armCut: 0=bare (skin), 2=short sleeve (upper sleeve, lower skin), 4=long.
+  const cut = pal.armCut == null ? 4 : pal.armCut;
+  for (let s = -1; s <= 1; s += 2) {
+    const p0 = T(s * 11, 0), p1 = T(s * 12, -10), p2 = T(s * 2, -17);
+    const ps = [p0];
+    for (let i = 1; i <= 4; i++) {
+      const t = i / 4, u = 1 - t;
+      ps.push([u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
+               u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]]);
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      const lo = pass ? cut : 0, hi = pass ? 4 : cut;
+      if (lo >= hi) continue;
+      g.lineStyle(5 * k, pass ? pal.headInner : pal.arm, a);
+      g.beginPath();
+      g.moveTo(ps[lo][0], ps[lo][1]);
+      for (let i = lo + 1; i <= hi; i++) g.lineTo(ps[i][0], ps[i][1]);
+      g.strokePath();
+    }
+  }
+  // Weapon springs from between the arms (just below the head).
+  if (weaponFn) { const wp = T(0, -10); weaponFn(wp[0], wp[1], ang); }
+  // Head — single skin-color circle (avg of the old outer/inner radii =
+  // 6.75) with a black outline for definition.
+  const hp = T(0, -3);
+  fc(g, pal.headInner, a, hp[0], hp[1], 6.75 * k);
+  sc(g, 1.2, 0x000000, a * 0.7, hp[0], hp[1], 6.75 * k);
+}
+
+function drawPlayer() {
+  if (!player || player.hp <= 0) return;
+  const hit = player.deadFlash > 0;
+  if (hit) player.deadFlash--;
+  const a = player.iframes > 0 ? 0.5 : 1;
+  const ang = player.facing;
+  const w = curWeapon();
+  const reloading = w.reloading > 0;
+  drawPerson(player.x, player.y, ang, {
+    torso:     hit ? 0xff4466 : 0x303030,   // jacket
+    arm:       hit ? 0xff8866 : 0x484848,   // sleeve (lighter shade)
+    headInner: hit ? 0xffeeee : 0xffd8a0,   // skin
+  }, reloading ? null : (wx, wy, wang) => drawWeaponIcon(g, wx, wy, w, wang, 1), a);
+  if (w.laser && !reloading) {
+    const d = rayDistToWall(player.x, player.y, ang, w.range);
+    ln(g, 1, 0xff3333, 0.65, player.x, player.y, player.x + Math.cos(ang) * d, player.y + Math.sin(ang) * d);
+  }
+  if (reloading) {
+    const total = w.reload;
+    const frac = 1 - w.reloading / total;
+    sc(g, 2, 0xffaa00, 1, player.x, player.y, PLAYER_R + 6);
+    arcRing(player.x, player.y, PLAYER_R + 6, frac, 3, 0xffe040);
+  }
+}
+
+function drawWeaponIcon(gx, x, y, w, ang, scale) {
+  const c = w.bcol;
+  const s = scale || 1;
+  const cx = Math.cos(ang), sx = Math.sin(ang);
+  const px = -sx, py = cx;
+  // Local rotation: (K along barrel, J along perpendicular) → world coords.
+  const ox = (K, J) => x + cx * K + px * J;
+  const oy = (K, J) => y + sx * K + py * J;
+  let len, thick = 2;
+  switch (w.id) {
+    case 'sniper':   len = 22 * s; break;
+    case 'lmg':      len = 17 * s; thick = 3.5; break;
+    case 'rifle':    len = 18 * s; break;
+    case 'burst':    len = 18 * s; break;
+    case 'launcher': len = 13 * s; thick = 4; break;
+    case 'shotgun':  len = 13 * s; break;
+    case 'smg':      len = 13 * s; break;
+    default:         len = 11 * s;
+  }
+  gx.lineStyle(thick, c, 1);
+  gx.lineBetween(x, y, ox(len, 0), oy(len, 0));
+  if (w.id === 'shotgun') {
+    gx.lineStyle(2, c, 1);
+    gx.lineBetween(ox(0, 2.5), oy(0, 2.5), ox(len, 2.5), oy(len, 2.5));
+    gx.lineBetween(ox(0, -2.5), oy(0, -2.5), ox(len, -2.5), oy(len, -2.5));
+    gx.fillStyle(0x553322, 1).fillCircle(ox(-2, 0), oy(-2, 0), 3 * s);
+  } else if (w.id === 'sniper') {
+    gx.fillStyle(c, 1).fillCircle(ox(len * 0.4, 4), oy(len * 0.4, 4), 2.2 * s);
+    gx.lineStyle(1, c, 0.7);
+    gx.lineBetween(ox(len * 0.4, 0), oy(len * 0.4, 0), ox(len * 0.4, 4), oy(len * 0.4, 4));
+    gx.fillStyle(0xddeeff, 1).fillCircle(ox(len, 0), oy(len, 0), 2);
+  } else if (w.id === 'launcher') {
+    gx.fillStyle(c, 1);
+    gx.beginPath();
+    gx.moveTo(ox(len, 4), oy(len, 4));
+    gx.lineTo(x + cx * (len + 4), y + sx * (len + 4));
+    gx.lineTo(ox(len, -4), oy(len, -4));
+    gx.closePath(); gx.fillPath();
+  } else if (w.id === 'lmg') {
+    gx.fillStyle(c, 1).fillCircle(ox(4, 4), oy(4, 4), 4 * s);
+    gx.lineStyle(1, 0x222, 1).strokeCircle(ox(4, 4), oy(4, 4), 4 * s);
+  } else if (w.id === 'smg') {
+    const mx = ox(5, 3), my = oy(5, 3);
+    gx.fillStyle(c, 1).fillRect(mx - 1.5, my - 1.5, 3 * s, 6 * s);
+  } else if (w.id === 'rifle' || w.id === 'burst') {
+    gx.fillStyle(c, 1).fillCircle(ox(len * 0.55, -3), oy(len * 0.55, -3), 1.6 * s);
+    if (w.id === 'burst') {
+      gx.fillCircle(ox(len * 0.75, -3), oy(len * 0.75, -3), 1.4 * s);
+    }
+  } else if (w.id === 'pistol') {
+    gx.fillStyle(c, 0.8).fillCircle(ox(-2, 0), oy(-2, 0), 2.2 * s);
+  }
+  gx.fillStyle(0x202830, 1).fillCircle(x, y, 2 * s);
+}
+
+// Permanent blood pool layer — drawn just above the floor, below everything
+// else. Cheap fillCircle per stain.
+function drawBloodStains() {
+  for (const s of bloodStains) fc(g, s.col, s.a, s.x, s.y, s.r);
+}
+
+// Faded corpses — same shape as the live enemy but darker alpha and no
+// weapon/HP overlay. A small inner blood spot underneath sells the kill.
+function drawCorpses() {
+  for (const c of corpses) {
+    const d = ENEMIES[c.type];
+    fc(g, 0x6a0010, 0.55, c.x, c.y, d.r + 4);
+    drawPerson(c.x, c.y, c.facing, enemyPal(d, c), null, 0.55, c.sizeK);
+  }
+}
+
+function drawEnemies() {
+  for (const e of enemies) {
+    const d = ENEMIES[e.type];
+    if (e.vip) {
+      fc(g, 0xffcc44, 0.25 + 0.15 * Math.sin(frameCount * 0.2), e.x, e.y, d.r * 2);
+      sc(g, 2, 0xffcc44, 1, e.x, e.y, d.r + 4);
+    }
+    if (e.fly) fc(g, d.col, 1, e.x, e.y, d.r);
+    else drawPerson(e.x, e.y, e.facing, enemyPal(d, e),
+      e.weapon ? (wx, wy, wa) => drawWeaponIcon(g, wx, wy, e.weapon, wa, 0.9) : null,
+      1, e.sizeK);
+    const hpFrac = e.hp / e.maxHp;
+    if (hpFrac < 1) {
+      bar(g, e.x - d.r, e.y - d.r - 7, d.r * 2, 3, hpFrac, 0x000000, 0x44ff66);
+    }
+    if (e.alert > 0.05 && e.state !== 'engage') {
+      fr(g, 0xffff66, e.alert, e.x - 1, e.y - d.r - 14, 2, 6);
+      fr(g, 0xffff66, e.alert, e.x - 1, e.y - d.r - 6,  2, 2);
+    }
+  }
+}
+// Build the runtime palette for a given enemy. Torso = type color from
+// registry, arm = same channels halved, helmet hardcoded dark, visor =
+// random skin assigned at spawn.
+function enemyPal(d, e) {
+  const c = e.vip ? 0xffd040 : d.col;
+  return { torso: c, arm: (c >> 1) & 0x7f7f7f, headInner: e.skin, armCut: e.armCut };
+}
+function ngonPoints(cx, cy, r, n, rot) {
+  const pts = [];
+  rot = rot || 0;
+  for (let i = 0; i < n; i++) {
+    const a = rot + i / n * Math.PI * 2;
+    pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+  }
+  return pts;
+}
+// DDA raycast against the tile grid. Returns the exact distance from
+// (x0, y0) to the first solid tile face along `ang`, or maxDist if no wall
+// is hit. Avoids the jagged stair-step pattern a fixed-step march produces
+// because adjacent rays converge on the same tile faces.
+function rayDistToWall(x0, y0, ang, maxDist) {
+  const dx = Math.cos(ang), dy = Math.sin(ang);
+  let cx = pt(x0), cy = pt(y0);
+  if (isSolid(map, cx, cy)) return 0;
+  const stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1;
+  const tDX = dx === 0 ? Infinity : Math.abs(TILE / dx);
+  const tDY = dy === 0 ? Infinity : Math.abs(TILE / dy);
+  let tMX = dx === 0 ? Infinity
+    : (dx > 0 ? (cx + 1) * TILE - x0 : x0 - cx * TILE) / Math.abs(dx);
+  let tMY = dy === 0 ? Infinity
+    : (dy > 0 ? (cy + 1) * TILE - y0 : y0 - cy * TILE) / Math.abs(dy);
+  while (true) {
+    if (tMX < tMY) {
+      cx += stepX;
+      if (tMX > maxDist) return maxDist;
+      if (isSolid(map, cx, cy)) return tMX;
+      tMX += tDX;
+    } else {
+      cy += stepY;
+      if (tMY > maxDist) return maxDist;
+      if (isSolid(map, cx, cy)) return tMY;
+      tMY += tDY;
+    }
+  }
+}
+
+function drawSightCones() {
+  for (const e of enemies) {
+    if (e.state === 'engage') continue;
+    const d = ENEMIES[e.type];
+    if (d.sight === 0) continue;
+    const a0 = e.facing - d.cone / 2, a1 = e.facing + d.cone / 2;
+    const col = e.alert > 0.05 ? 0xffaa44 : 0x6688aa;
+    g.fillStyle(col, 0.07 + e.alert * 0.1);
+    g.beginPath(); g.moveTo(e.x, e.y);
+    const steps = 16;
+    for (let i = 0; i <= steps; i++) {
+      const a = a0 + (a1 - a0) * (i / steps);
+      const r = rayDistToWall(e.x, e.y, a, d.sight);
+      g.lineTo(e.x + Math.cos(a) * r, e.y + Math.sin(a) * r);
+    }
+    g.closePath(); g.fillPath();
+  }
+}
+
+function drawBullets() {
+  for (const b of bullets) {
+    const c = b.bcol || 0xffffff;
+    if (b.flame) {
+      const f = 1 + Math.sin(frameCount * 0.5 + b.x) * 0.2;
+      fc(g, 0xff4411, 0.35, b.x, b.y, 11 * f);
+      fc(g, 0xff8833, 0.55, b.x, b.y, 7 * f);
+      fc(g, 0xffee88, 0.9, b.x, b.y, 3.5);
+    } else {
+      fc(g, c, 1, b.x, b.y, 3);
+      ln(g, 2, c, 0.5, b.x, b.y, b.x - b.vx * 0.6, b.y - b.vy * 0.6);
+    }
+  }
+}
+
+function drawExplosions() {
+  for (const e of explosions) {
+    const a = e.life / 14;
+    sc(g, 3, 0xff8830, a, e.x, e.y, e.r);
+    fc(g, 0xff5520, a * 0.4, e.x, e.y, e.r * 0.6);
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const a = Math.min(1, p.life / (p.max || 18));
+    if (p.ring) sc(g, 2, p.col, a, p.x, p.y, p.r * (1 - a) + 4);
+    else fc(g, p.col, a, p.x, p.y, p.r * a);
+  }
+}
+
+function drawPickups() {
+  // Cache the common phase once per frame — used by 6+ Math.sin calls below.
+  const t = frameCount * 0.1, pulse = Math.sin(t);
+  for (const p of pickups) {
+    if (p.kind === 'health') {
+      const r = 8 + pulse * 1.5;
+      fc(g, 0x44ff66, 0.9, p.x, p.y, r);
+      sc(g, 2, 0xffffff, 1, p.x, p.y, r);
+      fr(g, 0xffffff, 1, p.x - 1, p.y - 5, 2, 10);
+      fr(g, 0xffffff, 1, p.x - 5, p.y - 1, 10, 2);
+    } else if (p.kind === 'armor') {
+      fr(g, 0x4488cc, 0.9, p.x - 7, p.y - 8, 14, 14);
+      sr(g, 1, 0xaaddff, 1, p.x - 7, p.y - 8, 14, 14);
+      fr(g, 0xaaddff, 1, p.x - 1, p.y - 5, 2, 8);
+      fr(g, 0xaaddff, 1, p.x - 4, p.y - 2, 8, 2);
+    } else if (p.kind === 'ammo') {
+      fr(g, 0xffe070, 0.9, p.x - 8, p.y - 6, 16, 12);
+      sr(g, 1, 0xffffff, 1, p.x - 8, p.y - 6, 16, 12);
+      fr(g, 0x000000, 0.6, p.x - 5, p.y - 3, 10, 2);
+      fr(g, 0x000000, 0.6, p.x - 5, p.y + 1, 10, 2);
+    } else if (p.kind === 'weapon') {
+      fc(g, p.wInst.bcol, 0.18 + 0.08 * pulse, p.x, p.y, 16);
+      sc(g, 1, p.wInst.bcol, 0.7, p.x, p.y, 14);
+      drawWeaponIcon(g, p.x - 8, p.y, p.wInst, 0, 1.1);
+    } else if (p.kind === 'mod') {
+      const r = 12 + pulse * 2;
+      fc(g, 0xffaa22, 0.22 + 0.14 * Math.sin(frameCount * 0.16), p.x, p.y, r + 8);
+      polyStroke(g, 2, 0xffd060, 1, ngonPoints(p.x, p.y, r, 6, frameCount * 0.03), true);
+      fc(g, 0xffe070, 0.95, p.x, p.y, 4 + Math.abs(Math.sin(frameCount * 0.2)) * 2);
+    }
+  }
+}
+
+function drawProps() {
+  for (const p of props) {
+    if (p.kind === 'barrel') {
+      const t = frameCount * 0.05;
+      fc(g, 0xaa3322, 1, p.x, p.y, 12);
+      sc(g, 1, 0x661111, 1, p.x, p.y, 12);
+      fr(g, 0xffaa44, 0.7 + 0.3 * Math.sin(t), p.x - 8, p.y - 2, 16, 4);
+      fr(g, 0x222222, 1, p.x - 8, p.y - 6, 16, 2);
+      fr(g, 0x222222, 1, p.x - 8, p.y + 4, 16, 2);
+    } else if (p.kind === 'cage') {
+      sr(g, 2, 0xcccccc, 0.9, p.x - 16, p.y - 16, 32, 32);
+      g.lineStyle(2, 0xcccccc, 0.9);
+      for (let i = -10; i <= 10; i += 5) {
+        g.lineBetween(p.x + i, p.y - 16, p.x + i, p.y + 16);
+        g.lineBetween(p.x - 16, p.y + i, p.x + 16, p.y + i);
+      }
+    } else if (p.kind === 'terminal') {
+      fr(g, 0x224488, 1, p.x - 14, p.y - 14, 28, 28);
+      sr(g, 2, 0x66ccff, 1, p.x - 14, p.y - 14, 28, 28);
+      fr(g, 0x66ccff, 0.6 + 0.4 * Math.sin(frameCount * 0.15), p.x - 10, p.y - 10, 20, 14);
+      // Hack progress ring — per-terminal so multiple nodes show independent fills.
+      if (mission && mission.type === 'hack') {
+        const r = 22, frac = p.progress || 0;
+        sc(g, 3, 0xffcc44, 0.4, p.x, p.y, r);
+        if (frac > 0) arcRing(p.x, p.y, r, frac, 3, 0xffcc44);
+      }
+    } else if (p.kind === 'prize') {
+      const pls = 0.6 + 0.4 * Math.sin(frameCount * 0.12);
+      fc(g, 0xffd060, 0.25 * pls, p.x, p.y, 28);
+      fr(g, 0xffd060, 1, p.x - 10, p.y - 10, 20, 20);
+      sr(g, 2, 0xffffff, pls, p.x - 10, p.y - 10, 20, 20);
+    }
+  }
+}
+
+function drawHostage() {
+  if (!hostage || hostage.hp <= 0) return;
+  const ang = hostage.freed ? hostage.facing : 0;
+  drawPerson(hostage.x, hostage.y, ang,
+    { torso: 0x44ffaa, arm: 0x22a070, headInner: 0xffd8a0 }, null, 1, 0.65);
+  const f = hostage.hp / hostage.maxHp;
+  bar(g, hostage.x - 12, hostage.y - 16, 24, 3, f, 0x000000, 0x44ffaa);
+  if (!hostage.freed) {
+    sc(g, 2, 0xffe040, 0.8 + 0.2 * Math.sin(frameCount * 0.15), hostage.x, hostage.y, 18);
+  }
+}
+
+function drawPortal() {
+  if (!portal) return;
+  const r = 22 + Math.sin(portal.t * 0.1) * 3;
+  const active = missionComplete();
+  const colMain = active ? 0x66ffaa : 0x884444;
+  const colDim  = active ? 0xaaffcc : 0xbb6666;
+  sc(g, 3, colMain, 1,   portal.x, portal.y, r);
+  sc(g, 1, colDim,  0.6, portal.x, portal.y, r * 0.7);
+  fc(g, colMain, 0.2,    portal.x, portal.y, r * 0.5);
+  for (let i = 0; i < 4; i++) {
+    const a = portal.t * 0.05 + i * Math.PI / 2;
+    ln(g, 2, colMain, 0.6,
+      portal.x + Math.cos(a) * (r + 4),  portal.y + Math.sin(a) * (r + 4),
+      portal.x + Math.cos(a) * (r + 14), portal.y + Math.sin(a) * (r + 14));
+  }
+  if (!active) {
+    ln(g, 3, 0xff8888, 1, portal.x - 8, portal.y - 8, portal.x + 8, portal.y + 8);
+    ln(g, 3, 0xff8888, 1, portal.x - 8, portal.y + 8, portal.x + 8, portal.y - 8);
+  }
+}
+
+function drawHud() {
+  if (!player) return;
+  fr(gHud, 0x000000, 0.55, 0, 0, W, 110);
+  ln(gHud, 1, 0x335577, 0.5, 0, 110, W, 110);
+
+  // HP bar (red track + green/red fill).
+  const hpFrac = Math.max(0, player.hp / player.maxHp);
+  bar(gHud, 8, 16, 200, 10, hpFrac, 0x331818, player.hp < player.maxHp * 0.3 ? 0xff4040 : 0x44ff66);
+  sr(gHud, 1, 0xffffff, 0.8, 8, 16, 200, 10);
+  // Armor bar (blue), thinner, just below HP.
+  const arFrac = Math.max(0, player.armor / player.maxArmor);
+  bar(gHud, 8, 28, 200, 6, arFrac, 0x102030, 0x66bbff);
+  sr(gHud, 1, 0xffffff, 0.6, 8, 28, 200, 6);
+
+  // Mag bar — orange while reloading, yellow otherwise.
+  const w = curWeapon();
+  const maxMag = w.mag;
+  if (w.reloading > 0) {
+    bar(gHud, 220, 16, 140, 16, 1 - w.reloading / w.reload, 0x332200, 0xffaa00);
+  } else {
+    bar(gHud, 220, 16, 140, 16, w.ammo / Math.max(1, maxMag), 0x222a33, 0xfff0a0);
+  }
+  sr(gHud, 1, 0xffffff, 0.8, 220, 16, 140, 16);
+  drawWeaponIcon(gHud, 384, 24, w, 0, 1.15);
+
+  if (portal) {
+    drawHudCompass(w, maxMag);
+  } else {
+    hudText.setText('HP ' + (player.hp | 0) + '/' + player.maxHp + '  AR ' + (player.armor | 0) + '   LV ' + levelN);
+  }
+}
+
+function drawHudCompass(w, maxMag) {
+  const dx = portal.x - player.x, dy = portal.y - player.y;
+  const dist = Math.hypot(dx, dy);
+  const a = Math.atan2(dy, dx);
+  const cx = W - 60, cy = 24;
+  const colDir = missionComplete() ? 0x66ffaa : 0x886655;
+  sc(gHud, 2, colDir, 0.9, cx, cy, 14);
+  // Triangular needle pointing toward portal.
+  const tipX = cx + Math.cos(a) * 14, tipY = cy + Math.sin(a) * 14;
+  const baseX = cx - Math.cos(a) * 8, baseY = cy - Math.sin(a) * 8;
+  const ax = -Math.sin(a) * 5, ay = Math.cos(a) * 5;
+  polyFill(gHud, colDir, 1, [
+    [tipX, tipY], [baseX + ax, baseY + ay], [baseX - ax, baseY - ay],
+  ]);
+  // Multiline status text.
+  const modList = ws => ws.map(m => MODS[m].name.toLowerCase()).join(', ');
+  const modsStr = w.mods.length ? modList(w.mods) : '—';
+  let alt = '';
+  if (player.weapons.length > 1) {
+    const o = player.weapons[(player.weaponIdx + 1) % player.weapons.length];
+    const oMax = o.mag;
+    const oMods = o.mods.length ? '  [' + modList(o.mods) + ']' : '';
+    alt = '\nALT: ' + o.name + ' ' + (o.reloading > 0 ? 'RLD' : (o.ammo + '/' + oMax)) + ' [' + o.reserve + ']' + oMods;
+  }
+  hudText.setText(
+    'HP ' + (player.hp | 0) + '/' + player.maxHp + '  AR ' + (player.armor | 0) +
+    '   LV ' + levelN + '   SCORE ' + score + '   ESCAPE ' + (dist | 0) + 'm' +
+    '\n' + w.name + ' ' + (w.reloading > 0 ? 'RLD' : (w.ammo + '/' + maxMag)) + '  RES ' + w.reserve +
+    '   MODS: ' + modsStr +
+    alt
   );
 }
 
-function getStorage() {
-  if (window.platanusArcadeStorage) {
-    return window.platanusArcadeStorage;
+function drawObjective() {
+  if (!mission || mode !== 'play') {
+    objText.setText('');
+    if (timerText) timerText.setText('');
+    return;
   }
+  objText.setText(MISSIONS[mission.type].objective(mission));
+  // Big stealth timer top-right under GPS — yellow active, red <15s,
+  // ALARM red when expired. Hidden during the 2s detection grace.
+  if (mission.alarm) {
+    timerText.setText('ALARM');
+    timerText.setColor('#ff3030');
+  } else if (mission.deadline > 0 && mission.armed) {
+    const sec = Math.ceil(mission.deadline / 60);
+    timerText.setText(sec + 's');
+    timerText.setColor(sec < 15 ? '#ff5050' : '#ffd060');
+  } else {
+    timerText.setText('');
+  }
+}
 
-  return {
-    async get(key) {
-      try {
-        const raw = window.localStorage.getItem(key);
-        return raw === null
-          ? { found: false, value: null }
-          : { found: true, value: JSON.parse(raw) };
-      } catch {
-        return { found: false, value: null };
-      }
-    },
-    async set(key, value) {
-      window.localStorage.setItem(key, JSON.stringify(value));
-    },
+// ========================================================================
+// 15. AUDIO (procedural — Web Audio oscillators + simple step sequencer)
+// ========================================================================
+let audioCtx = null;
+function getCtx() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch { audioCtx = null; }
+  }
+  if (audioCtx && audioCtx.state === 'suspended') { try { audioCtx.resume(); } catch {} }
+  return audioCtx;
+}
+// Single oscillator wrapper. If `f1` is provided, the pitch linearly slides
+// from `freq` to `f1` over `dur`; otherwise it stays constant.
+function blip(freq, dur, type, vol, f1) {
+  const c = getCtx(); if (!c) return;
+  const o = c.createOscillator(), gn = c.createGain();
+  o.type = type || 'square';
+  if (f1) {
+    o.frequency.setValueAtTime(freq, c.currentTime);
+    o.frequency.linearRampToValueAtTime(Math.max(20, f1), c.currentTime + dur);
+  } else {
+    o.frequency.value = freq;
+  }
+  gn.gain.value = vol || 0.04;
+  gn.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
+  o.connect(gn); gn.connect(c.destination);
+  o.start(); o.stop(c.currentTime + dur);
+}
+// Bandpass-filtered white noise burst — gives crunch/squelch to flesh hits.
+function noise(dur, vol, freq) {
+  const c = getCtx(); if (!c) return;
+  const buf = c.createBuffer(1, (c.sampleRate * dur) | 0, c.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+  const src = c.createBufferSource(); src.buffer = buf;
+  const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq || 800;
+  const gn = c.createGain(); gn.gain.value = vol || 0.05;
+  src.connect(f); f.connect(gn); gn.connect(c.destination);
+  src.start(); src.stop(c.currentTime + dur);
+}
+const SHOOT_SFX = {
+  shotgun:  [120, 0.10, 'sawtooth', 0.18],
+  sniper:   [180, 0.15, 'square',   0.20],
+  launcher: [80,  0.18, 'sawtooth', 0.22],
+  lmg:      [420, 0.04, 'square',   0.12],
+  smg:      [520, 0.03, 'square',   0.10],
 };
+function sfxShoot(id) { blip(...(SHOOT_SFX[id] || [380, 0.05, 'square', 0.13])); }
+function sfxDie()    { blip(220, 0.5, 'sawtooth', 0.10, 50); noise(0.40, 0.07, 500); }
+function sfxPickup() { blip(880, 0.06, 'triangle', 0.05); blip(1320, 0.06, 'triangle', 0.04); }
+
+// Driving 16-step loop in D minor at ~125 BPM (16th-note feel).
+// Layered kick / snare / bass / lead so the track keeps constant motion.
+const MUS_KICK  = [1,0,0,0,  1,0,0,0,  1,0,0,0,  1,0,1,0];
+const MUS_SNARE = [0,0,0,0,  1,0,0,0,  0,0,0,0,  1,0,0,1];
+const MUS_BASS  = [73,0,73,73,  73,0,87,0,  73,0,73,110,  73,0,65,73];
+const MUS_LEAD  = [0,0,294,0,  0,349,0,294,  0,0,294,0,  0,262,0,294];
+function startMusic() {
+  if (musicStarted) {
+    // HMR-friendly: cancel any stale timer chain before restarting.
+    if (musTimer) { clearTimeout(musTimer); musTimer = null; }
+  }
+  musicStarted = true;
+  musStep = 0;
+  scheduleMusicNote();
+}
+function scheduleMusicNote() {
+  const c = getCtx();
+  const beat = 0.12;
+  if (c) {
+    const i = musStep % 16;
+    // Volumes tuned to sit just under the loudest SFX (~0.08) so the
+    // backing track is clearly present without burying gunshots/explosions.
+    if (MUS_KICK[i])  blip(55,          beat * 1.4,  'sawtooth', 0.06);
+    if (MUS_SNARE[i]) blip(220,         beat * 0.45, 'square',   0.035);
+    if (MUS_BASS[i])  blip(MUS_BASS[i], beat * 0.95, 'sawtooth', 0.045);
+    if (MUS_LEAD[i])  blip(MUS_LEAD[i], beat * 1.1,  'square',   0.03);
+  }
+  musStep++;
+  musTimer = setTimeout(scheduleMusicNote, beat * 1000);
 }
 
-async function storageGet(key) {
-  return getStorage().get(key);
+// ========================================================================
+// 16. NAMING + STORAGE
+// ========================================================================
+// Builds a roster of unique ADJ + NOUN codenames at run start.
+function buildRoster(n) {
+  const used = new Set();
+  const out = [];
+  let tries = 0;
+  while (out.length < n && tries++ < 200) {
+    const code = pickFrom(ADJECTIVES) + ' ' + pickFrom(NOUNS);
+    if (!used.has(code)) { used.add(code); out.push(code); }
+  }
+  return out;
 }
 
-async function storageSet(key, value) {
-  return getStorage().set(key, value);
+// Pop a fresh codename for the next named spawn. Falls back to ad-hoc
+// generation if the roster runs out on long runs.
+function takeCodename() {
+  if (runRoster.length) return runRoster.shift();
+  return pickFrom(ADJECTIVES) + ' ' + pickFrom(NOUNS);
+}
+
+// Track named entities and their outcome for the death-screen epilogue.
+function logTarget(name, kind) {
+  runHistory.push({ name, kind, fate: 'pending', level: levelN });
+}
+function setFate(name, fate) {
+  for (let i = runHistory.length - 1; i >= 0; i--) {
+    if (runHistory[i].name === name) { runHistory[i].fate = fate; return; }
+  }
+}
+
+async function loadBest() {
+  try {
+    const s = window.platanusArcadeStorage;
+    if (!s) return;
+    const r = await s.get('trigon-best');
+    if (r && r.found && typeof r.value === 'object' && typeof r.value.best === 'number') {
+      best = r.value.best | 0;
+      if (mode === 'title') goTitle();
+    }
+  } catch {}
+}
+async function saveBest() {
+  try { await window.platanusArcadeStorage.set('trigon-best', { best }); } catch {}
 }
