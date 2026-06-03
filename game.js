@@ -129,7 +129,7 @@ function showToast(text, col) {
 // Generic DOT tick — emits a rising particle of `pal` color and applies damage
 // every 8 ticks. Used by burn (fire) and poison; both can be active at once.
 function tickDot(e, key, pal) {
-  if (!e[key] || e[key] <= 0) return;
+  if (e.hp <= 0 || !e[key] || e[key] <= 0) return;
   particles.push({
     x: e.x + (Math.random() - 0.5) * 14,
     y: e.y - 4 + (Math.random() - 0.5) * 8,
@@ -212,8 +212,8 @@ function create() {
     .setScrollFactor(0).setDepth(1000);
   objText = this.add.text(W / 2, 116, '', { fontFamily: 'monospace', fontSize: '14px', color: '#ffd060', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
-  msgText = this.add.text(W / 2, H / 2, '', { fontFamily: 'monospace', fontSize: '20px', color: '#fff', align: 'center' })
-    .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
+  msgText = this.add.text(W / 2, 120, '', { fontFamily: 'monospace', fontSize: '17px', color: '#fff', align: 'center' })
+    .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
   // Big stealth timer, top-right under the GPS compass.
   timerText = this.add.text(W - 60, 50, '', { fontFamily: 'monospace', fontSize: '24px', color: '#ffd060', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
@@ -221,7 +221,7 @@ function create() {
   toastText = this.add.text(W / 2, H / 2 - 60, '', { fontFamily: 'monospace', fontSize: '22px', color: '#fff', align: 'center', stroke: '#000', strokeThickness: 3 })
     .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   // Big title (shown on title/gameover/pause screens).
-  titleText = this.add.text(W / 2, H / 2 - 130, '', { fontFamily: 'monospace', fontSize: '36px', color: '#ffd060' })
+  titleText = this.add.text(W / 2, 70, '', { fontFamily: 'monospace', fontSize: '36px', color: '#ffd060' })
     .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
   loadBest();
@@ -446,15 +446,21 @@ function offPathRooms(rooms, ax, ay, bx, by) {
 function goTitle() {
   mode = 'title';
   titleText.setText('ONE MORE EXTRACTION');
+  const pad = n => ('       ' + n).slice(-7);
   const scores = bestScores.length
-    ? '\n\nTOP SCORES\n' + bestScores.map((b, i) => (i + 1) + '. ' + b.s + '  lv ' + b.lv).join('\n')
+    ? '\n────── TOP SCORES ──────\n' + bestScores.map((b, i) => (i + 1) + '.  ' + pad(b.s) + '   lv ' + b.lv).join('\n')
     : '';
   msgText.setText(
-    'WASD move  U fire  I reload  O pickup\n' +
-    'enemies see in cones, hear shots\n' +
-    'hack terminals to reset alarm\n' +
-    'missions: escape destroy rescue eliminate hack heist\n\n' +
-    'START to play (pause anytime)' + scores
+    '─ CONTROLS ─\n' +
+    'WASD move    U fire    I reload    O pickup\n' +
+    'ENTER  start / pause\n\n' +
+    '─ INTEL ─\n' +
+    'enemies see in cones, hear shots and footsteps\n' +
+    'hack terminals to reset alarm and timer\n' +
+    'pick up weapons · stack mods · watch your ammo\n' +
+    'missions: escape · destroy · rescue · eliminate · hack · heist' +
+    scores +
+    '\n\n[ START to play ]'
   );
   objText.setText('');
 }
@@ -1093,7 +1099,6 @@ function makeEnemy(id, x, y, tier) {
     fired: 0,
     stuckTicks: 0,
     prevX: x, prevY: y,
-    blockedTicks: 0,
     skin: pickFrom(SKINS),
     sizeK: 0.85 + Math.random() * 0.30,   // ±15% body size variation
     armCut: [0, 2, 4][Math.random() * 3 | 0],   // 0=bare, 2=short sleeve, 4=long
@@ -1132,7 +1137,7 @@ function updateAI(e) {
   }
 
   if (e.state === 'patrol') {
-    if (!e.patrolTarget || e.patrolWait > 0) {
+    if (!e.patrolTarget) {
       if (e.patrolWait > 0) e.patrolWait--;
       else {
         // pick a target far away — encourages crossing rooms
@@ -1169,17 +1174,16 @@ function updateAI(e) {
     e.aim = ang;
     const wantRange = def.pr || 220;
     if (los) {
-      if (d > wantRange * 1.2) moveTowards(e, player.x, player.y, def.speed);
-      else if (d < wantRange * 0.6) moveAway(e, player.x, player.y, def.speed * 0.8);
+      if (d > wantRange * 1.2) mv(e, player.x, player.y, def.speed, 1, 1);
+      else if (d < wantRange * 0.6) mv(e, player.x, player.y, def.speed * 0.8, -1, 0);
       else brk(e, 0.5);
       if (w.cd === 0 && e.fired >= def.react) {
-        if (w.trigger === 'burst3') {
-          fireOnce(e, w); fireOnce(e, w); fireOnce(e, w);
-        } else fireOnce(e, w);
+        const n = w.trigger === 'burst3' ? 3 : 1;
+        for (let i = 0; i < n; i++) fireOnce(e, w);
       }
       e.fired++;
     } else {
-      if (e.lastSeen) moveTowards(e, e.lastSeen.x, e.lastSeen.y, def.speed * 0.8);
+      if (e.lastSeen) mv(e, e.lastSeen.x, e.lastSeen.y, def.speed * 0.8, 1, 1);
       else { brk(e, 0.7); e.state = 'alert'; }
       e.fired = Math.max(0, e.fired - 1);
       if (e.alert < 0.3 && (!e.lastSeen || d2(e.x, e.y, e.lastSeen.x, e.lastSeen.y) < 256)) {
@@ -1191,10 +1195,8 @@ function updateAI(e) {
 
   e.vx += e.knockX; e.vy += e.knockY;
   e.knockX *= 0.6; e.knockY *= 0.6;
-  if (Math.abs(e.knockX) < 0.05) e.knockX = 0;
-  if (Math.abs(e.knockY) < 0.05) e.knockY = 0;
 
-  const blocked = moveEntity(e, def.r);
+  moveEntity(e, def.r);
 
   // stuck detection — if not moving for a stretch, ditch the current target
   // and try a new patrol target. Snipers with cone open up and look around.
@@ -1209,23 +1211,16 @@ function updateAI(e) {
       e.stuckTicks = 0;
     }
   } else e.stuckTicks = 0;
-  if (blocked) e.blockedTicks++; else e.blockedTicks = 0;
-  if (e.blockedTicks > 18 && e.patrolTarget) { e.patrolTarget = null; e.blockedTicks = 0; }
   e.prevX = e.x; e.prevY = e.y;
 }
 
 // moveTowards turns to face the target; moveAway preserves facing so a
-// backing enemy keeps the player in its cone.
-function moveTowards(e, tx, ty, sp) {
-  const dx = tx - e.x, dy = ty - e.y;
+// dir = 1 toward target, -1 away. rot = 1 turns facing toward (only for "toward").
+function mv(e, tx, ty, sp, dir, rot) {
+  const dx = (tx - e.x) * dir, dy = (ty - e.y) * dir;
   const d = Math.hypot(dx, dy) || 1;
   e.vx = dx / d * sp; e.vy = dy / d * sp;
-  e.facing += angDiff(Math.atan2(dy, dx), e.facing) * 0.2;
-}
-function moveAway(e, tx, ty, sp) {
-  const dx = e.x - tx, dy = e.y - ty;
-  const d = Math.hypot(dx, dy) || 1;
-  e.vx = dx / d * sp; e.vy = dy / d * sp;
+  if (rot) e.facing += angDiff(Math.atan2(dy, dx), e.facing) * 0.2;
 }
 // Velocity brake — multiply vx/vy by k, used everywhere AI idles.
 const brk = (e, k) => { e.vx *= k; e.vy *= k; };
@@ -1715,6 +1710,11 @@ const sc = (G, lw, c, a, x, y, r) => G.lineStyle(lw, c, a).strokeCircle(x, y, r)
 const sr = (G, lw, c, a, x, y, w, h) => G.lineStyle(lw, c, a).strokeRect(x, y, w, h);
 const ln = (G, lw, c, a, x1, y1, x2, y2) => G.lineStyle(lw, c, a).lineBetween(x1, y1, x2, y2);
 // Polygon: pts is an array of [x, y]; fills with color/alpha.
+// Rotated+scaled local→world transform builder. Shared by drawPerson/drawCorpse.
+const mkT = (x, y, ang, k) => {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return (lx, ly) => [x + (-lx * s - ly * c) * k, y + (lx * c - ly * s) * k];
+};
 // Shared poly tracer: moveTo first vert, lineTo rest.
 function _poly(G, pts) {
   G.beginPath();
@@ -1815,9 +1815,7 @@ function drawMap() {
 function drawPerson(x, y, ang, pal, weaponFn, a, k) {
   a = a == null ? 1 : a;
   k = k || 1;
-  const cs = Math.cos(ang), sn = Math.sin(ang);
-  // Local (lx, ly) → world: rotates so local -y aligns with `ang`, scaled by k.
-  const T = (lx, ly) => [x + (-lx * sn - ly * cs) * k, y + (lx * cs - ly * sn) * k];
+  const T = mkT(x, y, ang, k);
   // Torso — 16-vertex ellipse, wider than tall (rx=13, ry=10).
   const tpts = [];
   for (let i = 0; i < 16; i++) {
@@ -1946,9 +1944,7 @@ function drawCorpse(c) {
   const a = 0.7;
   const k = c.sizeK || 1;
   if (!ch) fc(g, ex ? 0x8a1020 : 0x6a0010, 0.55, c.x, c.y, (d.r + (ex ? 10 : 5)) * k);
-  const ang = c.facing;
-  const co = Math.cos(ang), sn = Math.sin(ang);
-  const T = (lx, ly) => [c.x + (-lx * sn - ly * co) * k, c.y + (lx * co - ly * sn) * k];
+  const T = mkT(c.x, c.y, c.facing, k);
   // Rectangular torso (4 corners), narrow + long.
   const body = [T(-8, -10), T(8, -10), T(8, 10), T(-8, 10)];
   if (ex) {
@@ -2260,7 +2256,7 @@ function drawObjective() {
     return;
   }
   let obj = MISSIONS[mission.type].objective(mission);
-  if (nearestPickup(player.x, player.y, PICKUP_R + 6)) obj += '   · press O';
+  if (nearestPickup(player.x, player.y, PICKUP_R + 6)) obj += '   [press O to pick up]';
   objText.setText(obj);
   // Big stealth timer top-right under GPS — yellow active, red <15s,
   // ALARM red when expired. Hidden during the 2s detection grace.
