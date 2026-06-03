@@ -8,28 +8,29 @@ platform forbids `import`/`require`). Modularity comes from clearly delimited
 sections, the weapon/mod/perk/enemy registries as the single source of truth,
 and a fixed-timestep simulation.
 
-The player is a single triangle. Each level is a procgen room of cover blocks;
-clear the enemies, walk into the portal, repeat. Every `ALTAR_EVERY` levels
-the room is replaced by an altar with three random boons (mod / perk / heal).
+The player is a single triangle. Each level is a BSP-procgen layout of rooms
+and corridors; complete the mission (extract / destroy / rescue / eliminate /
+hack / heist), walk into the portal, repeat.
 
 ## Section layout in game.js
 
 ```
-1.  Config & constants     — W/H, TILE, COLS/ROWS, TICK_RATE, NOISE_GUNSHOT, ALTAR_EVERY
-2.  Cabinet input          — CABINET_KEYS (preserve verbatim) + held/pressed
+1.  Config & constants     — W/H, TILE, COLS/ROWS, TICK_RATE, NOISE_GUNSHOT
+2.  Cabinet keys           — CABINET_KEYS (preserve verbatim) + held/pressed
 3.  Registries             — WEAPONS, MODS, PERKS, ENEMIES (single source of truth)
-4.  Phaser bootstrap       — config + new Phaser.Game(...) + create()
-5.  Map gen + LOS          — emptyMap, genLevel, hasLOS, pickFreeTile
-6.  Game flow              — goTitle, startRun, enterLevel, spawnAltar, nextLevel, gameOver
-7.  Player                 — makePlayer, controlPlayer, fireOnce, perk multipliers
-8.  Enemies + AI           — makeEnemy, emitNoise, updateAI, findCoverSpot
-9.  Physics                — moveEntity, collidesWalls, updateBullets, explode
-10. Combat                 — damageEnemy, killEnemy, damagePlayer
-11. Pickups & altar        — takePickup, controlAltar, applyChoice
-12. Tick loop              — runTick, updateParticles
-13. Render                 — render, drawMap/Player/Enemies/SightCones/Bullets/HUD
-14. Audio                  — blip + sfx*
-15. Utils / storage        — angDiff, lerpAngle, loadBest, saveBest
+4.  Math & helper utils    — small pure helpers used everywhere
+5.  Phaser bootstrap       — config + new Phaser.Game(...) + create()
+6.  Map gen + LOS          — BSP rooms/corridors, hasLOS, pickFreeTile
+7.  Game flow + missions   — goTitle, startRun, enterLevel, MISSIONS, setDeadline, alarm
+8.  Player                 — makePlayer, controlPlayer, fireOnce, perk multipliers
+9.  Enemies + AI           — makeEnemy, emitNoise, updateAI, findCoverSpot
+10. Physics                — moveEntity, collidesWalls, updateBullets, explode
+11. Combat                 — damageEnemy, killEnemy, damagePlayer
+12. Pickups, hostage, props— takePickup, updateHostage, updateProps
+13. Tick loop              — runTick, updateParticles
+14. Render                 — render, drawMap/Player/Enemies/SightCones/Bullets/HUD
+15. Audio                  — blip + sfx*
+16. Naming + storage       — codenames, loadBest, saveBest
 ```
 
 Keep functions ≤ ~40 lines. If a function grows past that, extract a helper
@@ -139,18 +140,17 @@ makes individual enemies value cover differently — drones have 0, snipers 1.
 ## Render path
 
 Single Phaser `Graphics` object cleared and redrawn each frame. Order:
-background → grid → walls → pickups → portal → altar circles → enemies →
-player → bullets → explosions → particles → sight cones → HUD bar.
+background → grid → walls → pickups → portal → enemies → player → bullets →
+explosions → particles → sight cones → HUD bar.
 
 The HUD is a single Phaser `Text` updated each frame
 (`HP / WEAPON / AMMO / MODS / LV / SCORE / PERKS`). The center `msgText` is
-used for level transitions, altar prompts, and end-of-run text.
+used for level transitions, mission prompts, and end-of-run text.
 
 ## Pickup logic (P1_3)
 
 Single button. Nearest pickup within `PICKUP_R + 6` wins. If there is no
-pickup in range and you carry 2 weapons, P1_3 cycles the active weapon. At
-altars, P1_3 takes the closest podium boon.
+pickup in range and you carry 2 weapons, P1_3 cycles the active weapon.
 
 ## Storage
 

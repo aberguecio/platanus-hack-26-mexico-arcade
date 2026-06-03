@@ -1,5 +1,5 @@
 {
-  "game_name": "TRIGON",
-  "description": "Procedural roguelike shooter. You are a triangle in a procgen arena. Loot weapons (pistol, shotgun, SMG, rifle, sniper, LMG, launcher), stack mods (rapid, explosive, lifesteal, pierce, crit...) and pick passive perks (berserk, glass cannon, juggernaut...) to forge a run. Enemies patrol with sight cones and hearing — they only fight when they spot or hear you, and take cover to reload. Single-player. Highscore = deepest level reached.",
+  "game_name": "ONE MORE EXTRACTION",
+  "description": "Top-down stealth roguelite. You are a lone triangle running mission after mission through procgen complexes — extract, destroy, rescue, eliminate, hack, heist. Loot weapons (pistol, shotgun, SMG, rifle, sniper, LMG, launcher), stack mods (rapid, explosive, lifesteal, pierce, crit...) and pick passive perks (berserk, glass cannon, juggernaut...) to forge a run. Enemies patrol with sight cones and hearing — they only fight when they spot or hear you, and take cover to reload. Single-player. Highscore = deepest level reached.",
   "player_mode": "single_player"
 }

@@ -1,4 +1,4 @@
-// Platanus Hack 26 — TRIGON
+// Platanus Hack 26 — ONE MORE EXTRACTION
 // Procedural roguelike top-down shooter. You're a triangle.
 
 // ========================================================================
@@ -57,7 +57,7 @@ const WEAPONS = {
   burst:    { dmg: 13, rate: 24, mag: 24, reload: 65, spread: 0.04, range: 360, speed: 16, n: 1, trigger: 'burst3', bcol: 0xc0e0ff, name: 'BURST RIFLE' },
   sniper:   { dmg: 80, rate: 60, mag: 4,  reload: 95, spread: 0.0,  range: 900, speed: 22, n: 1, trigger: 'semi',   pierce: 3, bcol: 0x66ccff, name: 'SNIPER' },
   lmg:      { dmg: 8,  rate: 4,  mag: 80, reload: 150, spread: 0.18, range: 320, speed: 14, n: 1, trigger: 'auto',  bcol: 0xffe070, name: 'LMG' },
-  launcher: { dmg: 30, rate: 55, mag: 3,  reload: 110, spread: 0.0, range: 340, speed: 9,  n: 1, trigger: 'semi',   exp: 90, bcol: 0xff7733, name: 'LAUNCHER' },
+  launcher: { dmg: 30, rate: 55, mag: 3,  reload: 110, spread: 0.0, range: 340, speed: 9,  n: 1, trigger: 'semi',   exp: 90, expDmg: 30, bcol: 0xff7733, name: 'LAUNCHER' },
   flamer:   { dmg: 3,  rate: 3,  mag: 60, reload: 90,  spread: 0.45, range: 140, speed: 4,  n: 3, trigger: 'auto',   bcol: 0xff7722, burn: 110, burnDmg: 2, flame: true, banMods: ['expl', 'ricochet', 'incend', 'poison', 'laser'], name: 'FLAMER' },
 };
 const WEAPON_IDS = Object.keys(WEAPONS);
@@ -66,16 +66,16 @@ const MODS = {
   rapid:    { name: 'RAPID',     desc: '-30% fire delay', apply: w => { w.rate = Math.max(2, w.rate * 0.7 | 0); } },
   magplus:  { name: 'EXT MAG',   desc: '+50% magazine',   apply: w => { w.mag = Math.ceil(w.mag * 1.5); } },
   pierce:   { name: 'PIERCE',    desc: '+1 pierce',       apply: w => { w.pierce = (w.pierce || 0) + 1; } },
-  expl:     { name: 'EXPLOSIVE', desc: '+blast on hit',   apply: w => { w.exp = (w.exp || 0) + 36; } },
+  expl:     { name: 'EXPLOSIVE', desc: '+blast radius & dmg', apply: w => { w.exp = (w.exp || 0) + 36; w.expDmg = (w.expDmg || 0) + 10; } },
   vamp:     { name: 'LIFESTEAL', desc: 'heal 8% damage',  apply: w => { w.vamp = (w.vamp || 0) + 0.08; } },
-  crit:     { name: 'CRIT',      desc: '+25% crit x2.5',  apply: w => { w.crit = (w.crit || 0) + 0.25; } },
+  crit:     { name: 'CRIT',      desc: '+25% headshot (base 5%)', cap: 4, apply: w => { w.crit = (w.crit || 0) + 0.25; } },
   ricochet: { name: 'RICOCHET',  desc: '+1 bounce',       apply: w => { w.bounce = (w.bounce || 0) + 1; } },
   magnum:   { name: 'MAGNUM',    desc: '+40% damage',     apply: w => { w.dmg = w.dmg * 1.4; } },
-  silenced: { name: 'SILENCED',  desc: 'no noise',        apply: w => { w.silent = true; } },
+  silenced: { name: 'SILENCED',  desc: 'no noise',        cap: 1, apply: w => { w.silent = true; } },
   multi:    { name: 'MULTISHOT', desc: '+1 bullet/shot',  apply: w => { w.n = (w.n || 1) + 1; } },
-  incend:   { name: 'INCENDIARY',desc: '+burn DOT (short, hot)',  apply: w => { w.burn = (w.burn || 0) + 60;  w.burnDmg = (w.burnDmg || 0) + 2; } },
-  poison:   { name: 'POISON',    desc: '+venom DOT (long, slow)', apply: w => { w.burn = (w.burn || 0) + 240; w.burnDmg = (w.burnDmg || 0) + 1; w.dotPal = POISON_COLS; } },
-  laser:    { name: 'LASER',     desc: '+15% range, -50% spread', apply: w => { if (!w.laser) { w.range *= 1.15; w.laser = true; } w.spread *= 0.5; } },
+  incend:   { name: 'INCENDIARY',desc: '+burn DOT (short, hot)',  apply: w => { w.burn = (w.burn || 0) + 60;  if (!w.burnDmg) w.burnDmg = 2; } },
+  poison:   { name: 'POISON',    desc: '+venom DOT (long, slow)', apply: w => { w.poison = (w.poison || 0) + 160; if (!w.poisonDmg) w.poisonDmg = 1; } },
+  laser:    { name: 'LASER',     desc: '+15% range, -50% spread', cap: 1, apply: w => { w.range *= 1.15; w.spread *= 0.5; w.laser = true; } },
 };
 const MOD_IDS = Object.keys(MODS);
 
@@ -118,6 +118,32 @@ const d2 = (ax, ay, bx, by) => (ax - bx) * (ax - bx) + (ay - by) * (ay - by);
 const pickFrom = arr => arr[(Math.random() * arr.length) | 0];
 // Pixel → tile coord.
 const pt = v => (v / TILE) | 0;
+// Ephemeral center toast. New calls replace prior — single channel, no queue.
+function showToast(text, col) {
+  toast.text = text;
+  toast.col = col || '#fff';
+  toast.t = 150;
+  toast.max = 150;
+}
+// Generic DOT tick — emits a rising particle of `pal` color and applies damage
+// every 8 ticks. Used by burn (fire) and poison; both can be active at once.
+function tickDot(e, key, dmgKey, pal) {
+  if (!e[key] || e[key] <= 0) return;
+  particles.push({
+    x: e.x + (Math.random() - 0.5) * 14,
+    y: e.y - 4 + (Math.random() - 0.5) * 8,
+    vx: (Math.random() - 0.5) * 0.6,
+    vy: -0.7 - Math.random() * 0.6,
+    life: 18,
+    col: pal[(Math.random() * 4) | 0],
+    r: 3 + Math.random() * 2,
+  });
+  if ((e[key] & 7) === 0) {
+    e.hp -= e[dmgKey];
+    if (e.hp <= 0) killEnemy(e);
+  }
+  e[key]--;
+}
 // Size of the world for a given level. Caps prevent runaway memory + camera.
 function sizeForLevel(n) {
   return {
@@ -155,7 +181,7 @@ const game = new Phaser.Game({
   scene: { create, update },
 });
 
-let g, gHud, hudText, msgText, objText, scene, timerText;
+let g, gHud, hudText, msgText, objText, scene, timerText, toastText;
 let acc = 0, lastT = 0;
 
 let mode = 'title';
@@ -172,6 +198,8 @@ let runRoster = [];               // unused codenames left in this run, popped p
 let runHistory = [];              // {name, kind, fate, level} for every named entity this run
 let frameCount = 0;
 let footstepCounter = 0;
+// Toast: ephemeral 2-line center message for pickups, detection, breach, mission events.
+let toast = { t: 0, max: 0, col: '#ffffff', text: '' };
 let musicStarted = false, musTimer = null, musStep = 0;
 
 function create() {
@@ -187,6 +215,9 @@ function create() {
   // Big stealth timer, top-right under the GPS compass.
   timerText = this.add.text(W - 60, 50, '', { fontFamily: 'monospace', fontSize: '24px', color: '#ffd060', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
+  // Toast: short-lived center notice (pickups, detection, hack, mission complete).
+  toastText = this.add.text(W / 2, H / 2 - 60, '', { fontFamily: 'monospace', fontSize: '22px', color: '#fff', align: 'center', stroke: '#000', strokeThickness: 3 })
+    .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
   loadBest();
   goTitle();
@@ -410,7 +441,7 @@ function offPathRooms(rooms, ax, ay, bx, by) {
 function goTitle() {
   mode = 'title';
   msgText.setText(
-    'TRIGON\n' +
+    'ONE MORE EXTRACTION\n' +
     'top-down stealth roguelite\n\n' +
     'WASD move    U fire    I reload    O pickup/use\n' +
     'enemies see in cones, hear shots and footsteps\n' +
@@ -452,6 +483,7 @@ function enterLevel() {
   setupMission();
   mode = 'play';
   msgText.setText('');
+  toast.t = 0;
   if (scene && scene.cameras) {
     scene.cameras.main.scrollX = player.x - W / 2;
     scene.cameras.main.scrollY = player.y - H / 2;
@@ -625,20 +657,23 @@ function placePlayerStart() {
 
 function spawnEnemies() {
   const tier = Math.min(1, levelN / 14);
+  // Early-level safety bubble: larger no-spawn radius around the player on
+  // lvl 1-4, settling to baseline by lvl 5+. Eases the player into the game.
+  const safeFactor = Math.max(0.4, 1 - 0.15 * (levelN - 1));
 
   // Phase 1: guarantee one enemy in every room except the player's start
   // room. Type is rolled per room so the level still has variety.
   const types = ['grunt', 'grunt', 'grunt'];
   if (levelN >= 2) types.push('runner');
-  if (levelN >= 3) types.push('bruiser');
-  if (levelN >= 4) types.push('pyro');
-  if (levelN >= 5) types.push('sniper');
-  if (levelN >= 6) types.push('drone');
+  if (levelN >= 4) types.push('bruiser');
+  if (levelN >= 6) types.push('pyro');
+  if (levelN >= 8) types.push('sniper');
+  if (levelN >= 10) types.push('drone');
   let placed = 0;
   for (const r of mapRooms) {
     const [rx, ry] = tileCenter(r.cx, r.cy);
     // Skip the player's start room — spawning on top of the player is unfair.
-    if (d2(rx, ry, player.x, player.y) < CLEARANCE * CLEARANCE * 0.4) continue;
+    if (d2(rx, ry, player.x, player.y) < CLEARANCE * CLEARANCE * safeFactor) continue;
     const id = pickFrom(types);
     enemies.push(makeEnemy(id, rx, ry, tier));
     placed++;
@@ -646,17 +681,18 @@ function spawnEnemies() {
 
   // Phase 2: extra enemies based on level budget for higher density.
   const budget = Math.max(0, 8 + levelN * 3.2 - placed * 1.5);
+  const phase2Clear = 280 * Math.sqrt(safeFactor / 0.4);
   let pts = budget;
   while (pts > 0) {
     const r = Math.random();
     let id;
-    if (levelN >= 5 && r < 0.18) id = 'sniper';
-    else if (levelN >= 3 && r < 0.36) id = 'bruiser';
-    else if (levelN >= 4 && r < 0.50) id = 'pyro';
+    if (levelN >= 8 && r < 0.18) id = 'sniper';
+    else if (levelN >= 4 && r < 0.36) id = 'bruiser';
+    else if (levelN >= 6 && r < 0.50) id = 'pyro';
     else if (levelN >= 2 && r < 0.66) id = 'runner';
-    else if (levelN >= 6 && r < 0.78) id = 'drone';
+    else if (levelN >= 10 && r < 0.78) id = 'drone';
     else id = 'grunt';
-    const free = pickFreeTile(map, player.x, player.y, 280);
+    const free = pickFreeTile(map, player.x, player.y, phase2Clear);
     if (!free) break;
     const [cx, cy] = free;
     const [ex, ey] = tileCenter(cx, cy);
@@ -854,9 +890,10 @@ function makeWeaponInst(id, mods, reserveOverride) {
 
 function applyModToCur(mid) {
   const w = curWeapon();
-  const ban = w.banMods;
-  if (ban && ban.includes(mid)) {
-    const valid = MOD_IDS.filter(m => !ban.includes(m) && !w.mods.includes(m));
+  const ban = w.banMods || [];
+  const capped = m => MODS[m].cap && w.mods.filter(x => x === m).length >= MODS[m].cap;
+  if (ban.includes(mid) || capped(mid)) {
+    const valid = MOD_IDS.filter(m => !ban.includes(m) && !capped(m));
     if (!valid.length) return;
     mid = pickFrom(valid);
   }
@@ -992,10 +1029,12 @@ function pushBullet(owner, w, ox, oy, ang, dmg, range, isPlayer, crit) {
     hits: new Set(),
     bounce: w.bounce,
     exp: w.exp,
+    expDmg: w.expDmg,
     vamp: w.vamp,
     burn: w.burn,
     burnDmg: w.burnDmg,
-    dotPal: w.dotPal,
+    poison: w.poison,
+    poisonDmg: w.poisonDmg,
     flame: w.flame,
     crit,
     bcol: w.bcol,
@@ -1016,9 +1055,8 @@ function fireOnce(owner, w) {
   for (let i = 0; i < n; i++) {
     const spr = (Math.random() - 0.5) * 2 * w.spread;
     const a = aim + spr + (n > 1 ? (i - (n - 1) / 2) * (w.spread * 0.4) : 0);
-    let dmg = baseDmg, crit = false;
-    if (w.crit && Math.random() < w.crit) { dmg *= 2.5; crit = true; }
-    pushBullet(owner, w, muzzleX, muzzleY, a, dmg, range, isPlayer, crit);
+    const crit = isPlayer && Math.random() < ((w.crit || 0) + 0.05);
+    pushBullet(owner, w, muzzleX, muzzleY, a, baseDmg, range, isPlayer, crit);
   }
   particles.push({ x: owner.x, y: owner.y, vx: 0, vy: 0, life: 4, col: 0xfff0a0, r: 5 });
   if (!w.silent) emitNoise(owner.x, owner.y, NOISE_GUNSHOT, owner, 1);
@@ -1030,7 +1068,7 @@ function fireOnce(owner, w) {
 // ========================================================================
 function makeEnemy(id, x, y, tier) {
   const e = ENEMIES[id];
-  const hpScale = 1 + tier * 1.5;
+  const hpScale = (1 + tier * 1.5) * 0.7;
   return {
     type: id,
     x, y, vx: 0, vy: 0, facing: Math.random() * Math.PI * 2,
@@ -1299,7 +1337,7 @@ function updateBullets() {
         if (isSolid(map, pt(b.x + b.vx), pt(b.y))) b.vx = -b.vx;
         else b.vy = -b.vy;
       } else {
-        if (b.exp) explode(b.x, b.y, b.exp, b.dmg, b.owner);
+        if (b.exp) explode(b.x, b.y, b.exp, b.expDmg, b.owner);
         dead = true;
       }
     }
@@ -1310,7 +1348,7 @@ function updateBullets() {
         const r = 14;
         if (d2(b.x, b.y, p.x, p.y) < r * r) {
           p.hp = 0;
-          if (b.exp) explode(b.x, b.y, b.exp, b.dmg * 0.6, b.owner);
+          if (b.exp) explode(b.x, b.y, b.exp, b.expDmg * 0.6, b.owner);
           dead = true;
           break;
         }
@@ -1325,7 +1363,7 @@ function updateBullets() {
           if (d2(b.x, b.y, e.x, e.y) < r * r) {
             damageEnemy(e, b);
             b.hits.add(e);
-            if (b.exp) { explode(b.x, b.y, b.exp, b.dmg * 0.6, b.owner); dead = true; }
+            if (b.exp) { explode(b.x, b.y, b.exp, b.expDmg * 0.6, b.owner); dead = true; }
             else if (b.pierce > 0) b.pierce--;
             else dead = true;
             if (dead) break;
@@ -1345,7 +1383,7 @@ function updateBullets() {
           const r = PLAYER_R + 3;
           if (d2(b.x, b.y, player.x, player.y) < r * r) {
             damagePlayer(b.dmg);
-            if (b.exp) explode(b.x, b.y, b.exp, b.dmg * 0.5, b.owner);
+            if (b.exp) explode(b.x, b.y, b.exp, b.expDmg * 0.5, b.owner);
             dead = true;
           }
         }
@@ -1385,7 +1423,8 @@ function explode(x, y, radius, dmg, owner) {
 // 11. COMBAT
 // ========================================================================
 function damageEnemy(e, b) {
-  const dmg = b.dmg | 0;
+  let dmg = b.dmg | 0;
+  if (b.crit) dmg = Math.max(dmg, e.hp);   // headshot: guaranteed kill
   e.hp -= dmg;
   if (b.knock) {
     const a = Math.atan2(b.vy, b.vx);
@@ -1395,11 +1434,13 @@ function damageEnemy(e, b) {
   e.alert = 1; e.state = 'engage'; e.lastSeen = { x: player.x, y: player.y };
   // Visceral feedback on every hit: spray blood + a crunchy impact tone.
   // Crits show a yellow flash particle on top of the red spray.
-  bloodBurst(e.x, e.y, b.crit ? 10 : 5, b.vx, b.vy, b.crit);
+  bloodBurst(e.x, e.y, b.crit ? 22 : 5, b.vx, b.vy, b.crit);
   if (b.crit) {
-    particles.push({ x: e.x, y: e.y, vx: 0, vy: 0, life: 8, col: 0xffe040, r: 10 });
+    bloodBurst(e.x, e.y, 14, -b.vx, -b.vy, true);   // back-spray
+    particles.push({ x: e.x, y: e.y, vx: 0, vy: 0, life: 10, col: 0xffe040, r: 12 });
     blip(1400, 0.06, 'square', 0.06);
     blip(1900, 0.04, 'triangle', 0.04);
+    showToast('HEADSHOT!', '#ff3366');
   }
   if (e.hp > 0) { blip(70, 0.05, 'sawtooth', 0.05); noise(0.05, 0.06, 700); }
   if (b.vamp) {
@@ -1409,7 +1450,10 @@ function damageEnemy(e, b) {
   if (b.burn) {
     if ((e.burn || 0) < b.burn) e.burn = b.burn;
     if ((e.burnDmg || 0) < b.burnDmg) e.burnDmg = b.burnDmg;
-    e.dotPal = b.dotPal;
+  }
+  if (b.poison) {
+    if ((e.poison || 0) < b.poison) e.poison = b.poison;
+    if ((e.poisonDmg || 0) < b.poisonDmg) e.poisonDmg = b.poisonDmg;
   }
   if (e.hp <= 0) killEnemy(e);
 }
@@ -1457,7 +1501,7 @@ function damagePlayer(d) {
 }
 
 // ========================================================================
-// 12. PICKUPS, ALTAR, HOSTAGE, PROPS
+// 12. PICKUPS, HOSTAGE, PROPS
 // ========================================================================
 function nearestPickup(x, y, r) {
   let best = null, bestD = r * r;
@@ -1471,24 +1515,30 @@ function nearestPickup(x, y, r) {
 function takePickup(p) {
   if (p.kind === 'health') {
     player.hp = Math.min(player.maxHp, player.hp + 30);
+    showToast('+30 HP', '#66ffaa');
     sfxPickup();
   } else if (p.kind === 'armor') {
     player.armor = player.maxArmor;
+    showToast('ARMOR RESTORED', '#6699ff');
     sfxPickup();
   } else if (p.kind === 'ammo') {
     for (const w of player.weapons) {
       w.reserve += WEAPONS[w.id].mag;
     }
+    showToast('AMMO REFILLED', '#ffcc40');
     sfxPickup();
   } else if (p.kind === 'weapon') {
+    const wname = WEAPONS[p.wInst.id].name;
     // Already own this weapon? treat as ammo refill: 1x mag.
     const owned = player.weapons.find(w => w.id === p.wInst.id);
     if (owned) {
       owned.reserve += WEAPONS[p.wInst.id].mag;
+      showToast(wname + ' — AMMO +' + WEAPONS[p.wInst.id].mag, '#ffcc40');
       sfxPickup();
     } else if (player.weapons.length < 2) {
       player.weapons.push(p.wInst);
       player.weaponIdx = player.weapons.indexOf(p.wInst);
+      showToast('PICKED UP: ' + wname, '#ffd060');
       sfxPickup();
     } else {
       // Swap: drop the currently held weapon at the player's feet.
@@ -1496,10 +1546,13 @@ function takePickup(p) {
       pickups.push({ x: player.x, y: player.y, kind: 'weapon', wInst: old });
       player.weapons[player.weaponIdx] = p.wInst;
       player.weaponIdx = player.weapons.indexOf(p.wInst);
+      showToast('SWAP → ' + wname + '\ndropped ' + WEAPONS[old.id].name, '#ffd060');
       sfxPickup();
     }
   } else if (p.kind === 'mod') {
     applyModToCur(p.modId);
+    const m = MODS[p.modId];
+    showToast('MOD: ' + m.name + '\n' + m.desc, '#ffd060');
     sfxPickup();
   }
   const i = pickups.indexOf(p); if (i >= 0) pickups.splice(i, 1);
@@ -1531,9 +1584,10 @@ function updateProps() {
 }
 
 // ========================================================================
-// 13. TICK LOOP — fixed timestep, dispatched by mode (title/play/altar/dead)
+// 13. TICK LOOP — fixed timestep, dispatched by mode (title/play/dead)
 // ========================================================================
 function runTick() {
+  if (toast.t > 0) toast.t--;
   if (mode === 'title' || mode === 'gameover') {
     if (consumePress('START1')) startRun();
     return;
@@ -1541,23 +1595,8 @@ function runTick() {
   controlPlayer();
   for (const e of enemies) {
     updateAI(e);
-    if (e.burn > 0) {
-      const cols = e.dotPal || FIRE_COLS;
-      particles.push({
-        x: e.x + (Math.random() - 0.5) * 14,
-        y: e.y - 4 + (Math.random() - 0.5) * 8,
-        vx: (Math.random() - 0.5) * 0.6,
-        vy: -0.7 - Math.random() * 0.6,
-        life: 18,
-        col: cols[(Math.random() * 4) | 0],
-        r: 3 + Math.random() * 2,
-      });
-      if ((e.burn & 7) === 0) {
-        e.hp -= e.burnDmg;
-        if (e.hp <= 0) killEnemy(e);
-      }
-      e.burn--;
-    }
+    tickDot(e, 'burn', 'burnDmg', FIRE_COLS);
+    tickDot(e, 'poison', 'poisonDmg', POISON_COLS);
   }
   for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) enemies.splice(i, 1);
   updateBullets();
@@ -1592,17 +1631,27 @@ function runTick() {
         mission.alarm = false;
         for (const e of enemies) { e.state = 'patrol'; e.alert = 0; e.lastSeen = null; }
         blip(440, 0.3, 'sine', 0.08);
+        showToast('TERMINAL BREACHED\nalarm cleared · enemies stunned · timer reset', '#66ffff');
         detected = false;
       }
     }
     // 2s grace: detection has to persist before the timer arms. Once armed,
     // the timer never pauses — only a terminal hack stops the bleed.
     mission.detTime = detected ? mission.detTime + 1 : 0;
-    if (!mission.armed && mission.detTime >= 120) mission.armed = true;
+    if (!mission.armed && mission.detTime >= 120) {
+      mission.armed = true;
+      showToast('SPOTTED — TIMER ARMED', '#ff5050');
+    }
     if (mission.deadline > 0 && mission.armed) {
       if (--mission.deadline <= 0) startAlarm(mission);
     }
     if (mission.alarm) tickAlarm(mission);
+    // Mission complete celebration — fires once per level.
+    if (!mission.celebrated && missionComplete()) {
+      mission.celebrated = true;
+      showToast('MISSION COMPLETE\nreach portal to extract', '#66ffaa');
+      blip(660, 0.18, 'sine', 0.08);
+    }
   }
 }
 
@@ -1724,6 +1773,14 @@ function arcRing(x, y, r, frac, lw, col) {
 function render() {
   g.clear();
   gHud.clear();
+  // Toast update (any mode). Fade alpha over last 30 ticks.
+  if (toast.t > 0) {
+    toastText.setText(toast.text);
+    toastText.setColor(toast.col);
+    toastText.setAlpha(toast.t < 30 ? toast.t / 30 : 1);
+  } else if (toastText.text) {
+    toastText.setText('');
+  }
   if (mode === 'title' || mode === 'gameover') {
     if (mode === 'title') drawMap();
     return;
