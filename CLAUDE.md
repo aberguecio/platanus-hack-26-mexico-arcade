@@ -23,7 +23,7 @@ hack / heist), walk into the portal, repeat.
 6.  Map gen + LOS          — BSP rooms/corridors, hasLOS, pickFreeTile
 7.  Game flow + missions   — goTitle, startRun, enterLevel, MISSIONS, setDeadline, alarm
 8.  Player                 — makePlayer, controlPlayer, fireOnce, perk multipliers
-9.  Enemies + AI           — makeEnemy, emitNoise, updateAI, findCoverSpot
+9.  Enemies + AI           — makeEnemy, emitNoise, updateAI
 10. Physics                — moveEntity, collidesWalls, updateBullets, explode
 11. Combat                 — damageEnemy, killEnemy, damagePlayer
 12. Pickups, hostage, props— takePickup, updateHostage, updateProps
@@ -69,12 +69,10 @@ unless the behavior is genuinely new.
 read-side hook in the relevant helper.
 
 ### ENEMIES
-`{ hp, weapon, speed, sight, cone, hear, coverIQ, col, r, react, fly?, score }`.
+`{ hp, weapon, speed, sight, cone, hear, col, r, react, score }`.
 - `weapon`: id from WEAPONS — built once per spawn via `makeWeaponInst`.
 - `sight` / `cone`: detection cone (radius px / full-cone radians).
-- `hear`: noise pickup radius. `0` means deaf (drones).
-- `coverIQ` (0..1): probability the enemy seeks cover when reloading.
-- `fly: true` ignores cover blocks for movement (drones).
+- `hear`: noise pickup radius.
 
 ## Fixed-timestep simulation
 
@@ -102,16 +100,11 @@ States: `patrol → alert → engage`. Transitions are alert-driven:
   fills `e.alert` toward 1 when LOS to player + within cone + within `sight`.
 - **alert**: heard a gunshot or partially saw the player. Turn toward
   `lastSeen`, walk there. Drops back to patrol when alert decays to ~0.
-- **engage**: full alert. Maintain `preferredRange`, take cover when reloading
-  if `coverIQ` rolls succeed. Lost LOS → walks to last seen, falls back to
-  alert if it gets there with no contact.
-
-`findCoverSpot` samples 24 candidate offsets around the enemy (3 rings × 8
-directions) and picks the closest walkable spot whose LOS to the player is
-**blocked**. Cheap and good-enough; tune by adding more rings if needed.
+- **engage**: full alert. Maintain `preferredRange`. Lost LOS → walks to last
+  seen, falls back to alert if it gets there with no contact.
 
 `emitNoise(x, y, radius, source)` is called by `fireOnce` whenever a
-non-silent weapon fires. Drones (`fly: true`) ignore noise.
+non-silent weapon fires.
 
 ## LOS
 
@@ -134,8 +127,8 @@ expiry, wall hit (or on bounce exhaustion), or after exhausting pierce.
 
 There is **no separate cover/half-cover layer**. A solid tile blocks both
 movement, sight (LOS), and bullets. To make cover meaningful, the map gen
-scatters small wall clusters (1–3 tiles each) inside the room. `coverIQ`
-makes individual enemies value cover differently — drones have 0, snipers 1.
+scatters small wall clusters (1–3 tiles each) inside the room. Walls block
+movement, LOS, and bullets — cover-seeking AI removed.
 
 ## Render path
 

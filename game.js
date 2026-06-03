@@ -80,12 +80,13 @@ const MODS = {
 const MOD_IDS = Object.keys(MODS);
 
 const ENEMIES = {
-  grunt:   { hp: 25, weapon: 'pistol',  speed: 1.1, sight: 420, cone: 1.4, coverIQ: 0.8, col: 0x88aaff, r: 12, react: 25,  score: 5 },
-  runner:  { hp: 20, weapon: 'smg',     speed: 1.7, sight: 360, cone: 1.6, coverIQ: 0.2, col: 0xffaa44, r: 10, react: 18,  score: 7 },
-  sniper:  { hp: 22, weapon: 'sniper',  speed: 0.9, sight: 720, cone: 1.0, coverIQ: 1.0, col: 0x44dd66, r: 11, react: 36,  score: 12 },
-  bruiser: { hp: 65, weapon: 'shotgun', speed: 0.95,sight: 340, cone: 1.7, coverIQ: 0.4, col: 0xff2030, r: 16, react: 22,  score: 10 },
-  drone:   { hp: 12, weapon: 'smg',     speed: 1.5, sight: 420, cone: 2.0, coverIQ: 0.0, col: 0xffffff, r: 9,  react: 14,  fly: true, score: 6 },
-  pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, coverIQ: 0.2, col: 0xff5522, r: 13, react: 20,  score: 14 },
+  grunt:   { hp: 25, weapon: 'pistol',  speed: 1.1, sight: 420, cone: 1.4, col: 0x88aaff, r: 12, react: 25,  score: 5 },
+  runner:  { hp: 20, weapon: 'smg',     speed: 1.7, sight: 360, cone: 1.6, col: 0xc9a06a, r: 10, react: 18,  score: 7 },
+  sniper:  { hp: 22, weapon: 'sniper',  speed: 0.9, sight: 720, cone: 1.0, col: 0xcccccc, r: 11, react: 36,  score: 12 },
+  bruiser: { hp: 65, weapon: 'shotgun', speed: 0.95,sight: 340, cone: 1.7, col: 0x4d5d2b, r: 16, react: 22,  score: 10 },
+  pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, col: 0xff5522, r: 13, react: 20,  score: 14 },
+  gunner:  { hp: 75, weapon: 'lmg',     speed: 0.75,sight: 380, cone: 2.0, col: 0x778899, r: 14, react: 30,  score: 15 },
+  demo:    { hp: 22, weapon: 'launcher',speed: 1.0, sight: 360, cone: 1.5, col: 0x553388, r: 12, react: 50,  score: 16 },
 };
 const ENEMY_IDS = Object.keys(ENEMIES);
 // Skin tones used as random head-inner color per enemy spawn.
@@ -140,7 +141,7 @@ function tickDot(e, key, dmgKey, pal) {
   });
   if ((e[key] & 7) === 0) {
     e.hp -= e[dmgKey];
-    if (e.hp <= 0) killEnemy(e);
+    if (e.hp <= 0) killEnemy(e, key === 'poison' ? 'poison' : 'burn');
   }
   e[key]--;
 }
@@ -666,9 +667,10 @@ function spawnEnemies() {
   const types = ['grunt', 'grunt', 'grunt'];
   if (levelN >= 2) types.push('runner');
   if (levelN >= 4) types.push('bruiser');
+  if (levelN >= 5) types.push('sniper');
   if (levelN >= 6) types.push('pyro');
-  if (levelN >= 8) types.push('sniper');
-  if (levelN >= 10) types.push('drone');
+  if (levelN >= 7) types.push('gunner');
+  if (levelN >= 8) types.push('demo');
   let placed = 0;
   for (const r of mapRooms) {
     const [rx, ry] = tileCenter(r.cx, r.cy);
@@ -686,11 +688,12 @@ function spawnEnemies() {
   while (pts > 0) {
     const r = Math.random();
     let id;
-    if (levelN >= 8 && r < 0.18) id = 'sniper';
+    if (levelN >= 5 && r < 0.18) id = 'sniper';
     else if (levelN >= 4 && r < 0.36) id = 'bruiser';
     else if (levelN >= 6 && r < 0.50) id = 'pyro';
     else if (levelN >= 2 && r < 0.66) id = 'runner';
-    else if (levelN >= 10 && r < 0.78) id = 'drone';
+    else if (levelN >= 7 && r < 0.76) id = 'gunner';
+    else if (levelN >= 8 && r < 0.84) id = 'demo';
     else id = 'grunt';
     const free = pickFreeTile(map, player.x, player.y, phase2Clear);
     if (!free) break;
@@ -1042,10 +1045,12 @@ function pushBullet(owner, w, ox, oy, ang, dmg, range, isPlayer, crit) {
 }
 
 function fireOnce(owner, w) {
-  if (w.ammo <= 0) return;
-  w.ammo--;
-  w.cd = w.rate;
   const isPlayer = owner === player;
+  if (isPlayer) {
+    if (w.ammo <= 0) return;
+    w.ammo--;
+  }
+  w.cd = w.rate;
   const range = w.range;
   const baseDmg = w.dmg;
   const aim = owner.aim != null ? owner.aim : owner.facing;
@@ -1077,12 +1082,10 @@ function makeEnemy(id, x, y, tier) {
     state: 'patrol',
     alert: 0,
     lastSeen: null,
-    coverTarget: null,
     patrolTarget: null,
     patrolWait: 0,
     aim: 0,
     knockX: 0, knockY: 0,
-    fly: !!e.fly,
     fired: 0,
     stuckTicks: 0,
     prevX: x, prevY: y,
@@ -1095,7 +1098,7 @@ function makeEnemy(id, x, y, tier) {
 
 function emitNoise(x, y, radius, source, alertGain = 0.6) {
   for (const e of enemies) {
-    if (e === source || e.fly) continue;
+    if (e === source) continue;
     if (Math.hypot(e.x - x, e.y - y) < radius) {
       e.lastSeen = { x, y };
       if (e.state === 'patrol') e.state = 'alert';
@@ -1108,8 +1111,6 @@ function updateAI(e) {
   const def = ENEMIES[e.type];
   const w = e.weapon;
   if (w.cd > 0) w.cd--;
-  if (w.reloading > 0) w.reloading--;
-  if (w.reloading === 0 && w.ammo === 0) w.ammo = w.mag;
 
   const dx = player.x - e.x, dy = player.y - e.y;
   const d = Math.hypot(dx, dy);
@@ -1162,18 +1163,11 @@ function updateAI(e) {
     e.facing += angDiff(ang, e.facing) * 0.2;
     e.aim = ang;
     const wantRange = preferredRange(e.type);
-    if (w.ammo === 0 && w.reloading === 0) {
-      w.reloading = w.reload | 0;
-      if (Math.random() < def.coverIQ && !e.fly) e.coverTarget = findCoverSpot(e, player);
-    }
-    if (w.reloading > 0 && e.coverTarget) {
-      moveTowards(e, e.coverTarget.x, e.coverTarget.y, def.speed * 0.9);
-      if (d2(e.x, e.y, e.coverTarget.x, e.coverTarget.y) < 100) e.coverTarget = null;
-    } else if (los) {
+    if (los) {
       if (d > wantRange * 1.2) moveTowards(e, player.x, player.y, def.speed);
       else if (d < wantRange * 0.6) moveAway(e, player.x, player.y, def.speed * 0.8);
       else brk(e, 0.5);
-      if (w.cd === 0 && w.ammo > 0 && e.fired >= def.react) {
+      if (w.cd === 0 && e.fired >= def.react) {
         if (w.trigger === 'burst3') {
           fireOnce(e, w); fireOnce(e, w); fireOnce(e, w);
         } else fireOnce(e, w);
@@ -1195,7 +1189,7 @@ function updateAI(e) {
   if (Math.abs(e.knockX) < 0.05) e.knockX = 0;
   if (Math.abs(e.knockY) < 0.05) e.knockY = 0;
 
-  const blocked = e.fly ? moveEntityFlying(e, def.r) : moveEntity(e, def.r);
+  const blocked = moveEntity(e, def.r);
 
   // stuck detection — if not moving for a stretch, ditch the current target
   // and try a new patrol target. Snipers with cone open up and look around.
@@ -1220,7 +1214,6 @@ function preferredRange(type) {
   if (type === 'bruiser') return 130;
   if (type === 'pyro') return 110;
   if (type === 'runner') return 150;
-  if (type === 'drone') return 180;
   return 220;
 }
 
@@ -1239,14 +1232,6 @@ function moveAway(e, tx, ty, sp) {
 }
 // Velocity brake — multiply vx/vy by k, used everywhere AI idles.
 const brk = (e, k) => { e.vx *= k; e.vy *= k; };
-
-const COVER_OFFSETS = (() => {
-  const o = [];
-  for (let r = 1; r <= 3; r++)
-    for (let a = 0; a < 8; a++)
-      o.push([Math.cos(a / 8 * Math.PI * 2) * r * TILE, Math.sin(a / 8 * Math.PI * 2) * r * TILE]);
-  return o;
-})();
 
 // If the enemy's facing direction has a wall right in front of it, rotate
 // toward the most open angle within an 8-direction sweep. Keeps idle/patrol
@@ -1268,18 +1253,6 @@ function avoidFacingWall(e) {
     if (d > bestD) { bestD = d; bestA = a; }
   }
   e.facing += angDiff(bestA, e.facing) * 0.35;
-}
-
-function findCoverSpot(e, target) {
-  let best = null, bestD = 1e9;
-  for (const [ox, oy] of COVER_OFFSETS) {
-    const tx = e.x + ox, ty = e.y + oy;
-    if (tileAt(map, pt(tx), pt(ty)) !== 0) continue;
-    if (hasLOS(map, tx, ty, target.x, target.y)) continue;
-    const d = Math.hypot(ox, oy);
-    if (d < bestD) { bestD = d; best = { x: tx, y: ty }; }
-  }
-  return best;
 }
 
 // ========================================================================
@@ -1304,12 +1277,6 @@ function moveEntity(e, r) {
   if (collidesWalls(e.x, ny, r)) { ny = e.y; e.vy = 0; blocked = true; }
   e.y = ny;
   return clampPos(e, r) || blocked;
-}
-
-function moveEntityFlying(e, r) {
-  e.x += e.vx; e.y += e.vy;
-  clampPos(e, r);
-  return false;
 }
 
 function collidesWalls(x, y, r) {
@@ -1399,7 +1366,7 @@ function explode(x, y, radius, dmg, owner) {
   for (const e of enemies) {
     if (e.hp <= 0) continue;
     const dd = Math.hypot(e.x - x, e.y - y);
-    if (dd < radius) damageEnemy(e, { dmg: dmg * (1 - dd / radius), vx: e.x - x, vy: e.y - y, knock: 5, vamp: 0 });
+    if (dd < radius) damageEnemy(e, { dmg: dmg * (1 - dd / radius), vx: e.x - x, vy: e.y - y, knock: 5, vamp: 0, exp: 1 });
   }
   // chain barrels
   for (const p of props) {
@@ -1455,14 +1422,14 @@ function damageEnemy(e, b) {
     if ((e.poison || 0) < b.poison) e.poison = b.poison;
     if ((e.poisonDmg || 0) < b.poisonDmg) e.poisonDmg = b.poisonDmg;
   }
-  if (e.hp <= 0) killEnemy(e);
+  if (e.hp <= 0) killEnemy(e, b.crit ? 'headshot' : b.exp ? 'explosion' : 'normal');
 }
 
-function killEnemy(e) {
+function killEnemy(e, cause) {
   // Big gory burst, ring shockwave, and a corpse that stays on the floor.
   bloodBurst(e.x, e.y, 18, 0, 0, true);
   particles.push({ x: e.x, y: e.y, vx: 0, vy: 0, life: 18, col: ENEMIES[e.type].col, r: 16, ring: true });
-  spawnCorpse(e);
+  spawnCorpse(e, cause || 'normal');
   score += ENEMIES[e.type].score * (e.vip ? 4 : 1);
   if (e.vip && mission && mission.type === 'eliminate') {
     mission.killed = true;
@@ -1669,18 +1636,27 @@ function dropStain(x, y, big) {
 
 // Push the dead enemy's body onto the corpses list so it keeps being drawn
 // (faded, with no AI/collision) until the next level. Capped FIFO.
-function spawnCorpse(e) {
-  if (e.fly) return;
+function spawnCorpse(e, cause) {
   if (corpses.length > 100) corpses.shift();
-  corpses.push({
+  const c = {
     x: e.x, y: e.y,
     type: e.type,
-    facing: e.facing + (Math.random() - 0.5) * 1.0,
+    facing: e.facing + (Math.random() - 0.5) * 0.5,
     vip: !!e.vip,
     skin: e.skin,
     sizeK: e.sizeK,
     armCut: e.armCut,
-  });
+    cause: cause || 'normal',
+  };
+  if (c.cause === 'explosion') {
+    c.limbs = [];
+    for (let i = 0; i < 4; i++) {
+      const a = (i * 1.7 + e.facing);
+      const r = 14 + (i * 5) % 9;
+      c.limbs.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+  }
+  corpses.push(c);
 }
 
 // Spawn a fan of red blood specks flying outward from (x, y). The burst
@@ -1974,10 +1950,56 @@ function drawBloodStains() {
 // Faded corpses — same shape as the live enemy but darker alpha and no
 // weapon/HP overlay. A small inner blood spot underneath sells the kill.
 function drawCorpses() {
-  for (const c of corpses) {
-    const d = ENEMIES[c.type];
-    fc(g, 0x6a0010, 0.55, c.x, c.y, d.r + 4);
-    drawPerson(c.x, c.y, c.facing, enemyPal(d, c), null, 0.55, c.sizeK);
+  for (const c of corpses) drawCorpse(c);
+}
+
+// Lying-down dead body: torso, splayed arms/legs, head — with variants per
+// cause of death (headshot = no head, explosion = scattered limbs, burn =
+// charred, poison = green skin). Matches drawPerson scale + detail.
+function drawCorpse(c) {
+  const d = ENEMIES[c.type];
+  const pal = enemyPal(d, c);
+  const cs = c.cause;
+  const ch = cs === 'burn';
+  const ex = cs === 'explosion';
+  const hs = cs === 'headshot';
+  const ps = cs === 'poison';
+  const torso = ch ? 0x1a1a1a : pal.torso;
+  const arm = ch ? 0x1a1a1a : pal.arm;
+  const skin = ch ? 0x1a1a1a : ps ? 0x99cc66 : pal.headInner;
+  const a = 0.7;
+  const k = c.sizeK || 1;
+  if (!ch) fc(g, ex ? 0x8a1020 : 0x6a0010, 0.55, c.x, c.y, (d.r + (ex ? 10 : 5)) * k);
+  const ang = c.facing;
+  const co = Math.cos(ang), sn = Math.sin(ang);
+  const T = (lx, ly) => [c.x + (-lx * sn - ly * co) * k, c.y + (lx * co - ly * sn) * k];
+  // Rectangular torso (4 corners), narrow + long.
+  const body = [T(-8, -10), T(8, -10), T(8, 10), T(-8, 10)];
+  if (ex) {
+    polyFill(g, torso, a, body);
+    for (let i = 0; i < c.limbs.length; i++) {
+      const [dx, dy] = c.limbs[i];
+      fc(g, i < 2 ? skin : arm, a, c.x + dx * k, c.y + dy * k, 6 * k);
+    }
+  } else {
+    const cut = c.armCut == null ? 4 : c.armCut;
+    const limb = (p0, p1, p2, c1, c2, w) => {
+      ln(g, w * k, c1, a, p0[0], p0[1], p1[0], p1[1]);
+      ln(g, 5 * k, c2, a, p1[0], p1[1], p2[0], p2[1]);
+    };
+    const upArm = cut >= 2 ? arm : skin;
+    const loArm = cut === 4 ? arm : skin;
+    // Arms first (behind body), then body, then legs (in front).
+    limb(T(6, -10),  T(16, -14), T(14, -24), upArm, loArm, 6);
+    limb(T(-6, -10), T(-14, 4),  T(-18, 14), upArm, loArm, 6);
+    polyFill(g, torso, a, body);
+    limb(T(5, 10),  T(7, 24),    T(2, 38),  torso, torso, 7);
+    limb(T(-5, 10), T(-11, 25),  T(-3, 38), torso, torso, 7);
+    if (!hs) {
+      const hp = T(0, -15);
+      fc(g, skin, a, hp[0], hp[1], 6.75 * k);
+      sc(g, 1.2, 0x000000, a * 0.7, hp[0], hp[1], 6.75 * k);
+    }
   }
 }
 
@@ -1988,8 +2010,7 @@ function drawEnemies() {
       fc(g, 0xffcc44, 0.25 + 0.15 * Math.sin(frameCount * 0.2), e.x, e.y, d.r * 2);
       sc(g, 2, 0xffcc44, 1, e.x, e.y, d.r + 4);
     }
-    if (e.fly) fc(g, d.col, 1, e.x, e.y, d.r);
-    else drawPerson(e.x, e.y, e.facing, enemyPal(d, e),
+    drawPerson(e.x, e.y, e.facing, enemyPal(d, e),
       e.weapon ? (wx, wy, wa) => drawWeaponIcon(g, wx, wy, e.weapon, wa, 0.9) : null,
       1, e.sizeK);
     const hpFrac = e.hp / e.maxHp;
