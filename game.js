@@ -81,10 +81,10 @@ const MOD_IDS = Object.keys(MODS);
 
 const ENEMIES = {
   grunt:   { hp: 25, weapon: 'pistol',  speed: 1.1, sight: 420, cone: 1.4, col: 0x88aaff, r: 12, react: 25,  score: 5 },
-  runner:  { hp: 20, weapon: 'smg',     speed: 1.7, sight: 360, cone: 1.6, col: 0xc9a06a, r: 10, react: 18,  score: 7 },
-  sniper:  { hp: 22, weapon: 'sniper',  speed: 0.9, sight: 720, cone: 1.0, col: 0xcccccc, r: 11, react: 36,  score: 12 },
-  bruiser: { hp: 65, weapon: 'shotgun', speed: 0.95,sight: 340, cone: 1.7, col: 0x4d5d2b, r: 16, react: 22,  score: 10 },
-  pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, col: 0xff5522, r: 13, react: 20,  score: 14 },
+  runner:  { hp: 20, weapon: 'smg',     speed: 1.7, sight: 360, cone: 1.6, col: 0xc9a06a, r: 10, react: 18,  score: 7,  pr: 150 },
+  sniper:  { hp: 22, weapon: 'sniper',  speed: 0.9, sight: 720, cone: 1.0, col: 0xcccccc, r: 11, react: 36,  score: 12, pr: 380 },
+  bruiser: { hp: 65, weapon: 'shotgun', speed: 0.95,sight: 340, cone: 1.7, col: 0x4d5d2b, r: 16, react: 22,  score: 10, pr: 130 },
+  pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, col: 0xff5522, r: 13, react: 20,  score: 14, pr: 110 },
   gunner:  { hp: 75, weapon: 'lmg',     speed: 0.75,sight: 380, cone: 2.0, col: 0x778899, r: 14, react: 30,  score: 15 },
   demo:    { hp: 22, weapon: 'launcher',speed: 1.0, sight: 360, cone: 1.5, col: 0x553388, r: 12, react: 50,  score: 16 },
 };
@@ -128,7 +128,7 @@ function showToast(text, col) {
 }
 // Generic DOT tick — emits a rising particle of `pal` color and applies damage
 // every 8 ticks. Used by burn (fire) and poison; both can be active at once.
-function tickDot(e, key, dmgKey, pal) {
+function tickDot(e, key, pal) {
   if (!e[key] || e[key] <= 0) return;
   particles.push({
     x: e.x + (Math.random() - 0.5) * 14,
@@ -140,8 +140,8 @@ function tickDot(e, key, dmgKey, pal) {
     r: 3 + Math.random() * 2,
   });
   if ((e[key] & 7) === 0) {
-    e.hp -= e[dmgKey];
-    if (e.hp <= 0) killEnemy(e, key === 'poison' ? 'poison' : 'burn');
+    e.hp -= e[key + 'Dmg'];
+    if (e.hp <= 0) killEnemy(e, key);
   }
   e[key]--;
 }
@@ -182,7 +182,7 @@ const game = new Phaser.Game({
   scene: { create, update },
 });
 
-let g, gHud, hudText, msgText, objText, scene, timerText, toastText;
+let g, gHud, hudText, msgText, objText, scene, timerText, toastText, titleText;
 let acc = 0, lastT = 0;
 
 let mode = 'title';
@@ -192,6 +192,7 @@ let bloodStains = [];                    // permanent floor splats; FIFO-capped
 let corpses = [];                        // dead-enemy bodies, stay rendered until level change
 let hostage = null, mission = null, mapRooms = [];
 let map, levelN = 1, score = 0, best = 0, portal = null;
+let bestScores = [];   // top 5: [{ s: score, lv: level }, ...] sorted desc
 let roomsWithItems = new Set();   // rooms that already contain a pickup/objective; one item per room
 // Narrative state — picked at startRun, referenced by objText + death screen.
 let factionName = 'THE HOLLOW';
@@ -218,6 +219,9 @@ function create() {
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
   // Toast: short-lived center notice (pickups, detection, hack, mission complete).
   toastText = this.add.text(W / 2, H / 2 - 60, '', { fontFamily: 'monospace', fontSize: '22px', color: '#fff', align: 'center', stroke: '#000', strokeThickness: 3 })
+    .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
+  // Big title (shown on title/gameover/pause screens).
+  titleText = this.add.text(W / 2, H / 2 - 130, '', { fontFamily: 'monospace', fontSize: '36px', color: '#ffd060' })
     .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
   loadBest();
@@ -441,16 +445,16 @@ function offPathRooms(rooms, ax, ay, bx, by) {
 // ========================================================================
 function goTitle() {
   mode = 'title';
+  titleText.setText('ONE MORE EXTRACTION');
+  const scores = bestScores.length
+    ? '\n\nTOP SCORES\n' + bestScores.map((b, i) => (i + 1) + '. ' + b.s + '  lv ' + b.lv).join('\n')
+    : '';
   msgText.setText(
-    'ONE MORE EXTRACTION\n' +
-    'top-down stealth roguelite\n\n' +
-    'WASD move    U fire    I reload    O pickup/use\n' +
-    'enemies see in cones, hear shots and footsteps\n' +
-    'sneak past or fight; off-path rooms hide caches\n\n' +
-    'missions: escape, destroy, rescue, eliminate, hack, heist\n' +
-    'spotted 2s -> alarm arms; hack a terminal to reset\n' +
-    'timer at 0 -> red alarm and endless reinforcements\n\n' +
-    'START (Enter) to begin    best level: ' + best
+    'WASD move  U fire  I reload  O pickup\n' +
+    'enemies see in cones, hear shots\n' +
+    'hack terminals to reset alarm\n' +
+    'missions: escape destroy rescue eliminate hack heist\n\n' +
+    'START to play (pause anytime)' + scores
   );
   objText.setText('');
 }
@@ -484,7 +488,10 @@ function enterLevel() {
   setupMission();
   mode = 'play';
   msgText.setText('');
+  titleText.setText('');
   toast.t = 0;
+  const BRIEFS = { extract:'reach the portal', destroy:'kill all hostiles', rescue:'free the hostage', eliminate:'kill the target', hack:'breach the terminals', heist:'grab the cache' };
+  showToast(mission.type.toUpperCase() + '\n' + BRIEFS[mission.type], '#ffd060');
   if (scene && scene.cameras) {
     scene.cameras.main.scrollX = player.x - W / 2;
     scene.cameras.main.scrollY = player.y - H / 2;
@@ -685,16 +692,11 @@ function spawnEnemies() {
   const budget = Math.max(0, 8 + levelN * 3.2 - placed * 1.5);
   const phase2Clear = 280 * Math.sqrt(safeFactor / 0.4);
   let pts = budget;
+  const P2 = [[5,0.18,'sniper'],[4,0.36,'bruiser'],[6,0.50,'pyro'],[2,0.66,'runner'],[7,0.76,'gunner'],[8,0.84,'demo']];
   while (pts > 0) {
     const r = Math.random();
-    let id;
-    if (levelN >= 5 && r < 0.18) id = 'sniper';
-    else if (levelN >= 4 && r < 0.36) id = 'bruiser';
-    else if (levelN >= 6 && r < 0.50) id = 'pyro';
-    else if (levelN >= 2 && r < 0.66) id = 'runner';
-    else if (levelN >= 7 && r < 0.76) id = 'gunner';
-    else if (levelN >= 8 && r < 0.84) id = 'demo';
-    else id = 'grunt';
+    let id = 'grunt';
+    for (const [L, p, t] of P2) if (levelN >= L && r < p) { id = t; break; }
     const free = pickFreeTile(map, player.x, player.y, phase2Clear);
     if (!free) break;
     const [cx, cy] = free;
@@ -853,13 +855,16 @@ function nextLevel() {
 function gameOver() {
   mode = 'gameover';
   if (mission) MISSIONS[mission.type].end?.(mission, false);
-  if (levelN - 1 > best) { best = levelN - 1; saveBest(); }
+  if (levelN - 1 > best) best = levelN - 1;
+  recordScore(score | 0, levelN);
+  saveBest();
   for (const h of runHistory) if (h.fate === 'pending') h.fate = 'lost';
   const log = runHistory.length
     ? '\n\n' + runHistory.map(h => 'L' + h.level + ' ' + h.fate + ' ' + h.name).join('\n')
     : '';
+  titleText.setText('YOU DIED');
   msgText.setText(
-    'YOU DIED\n\nlevel ' + levelN + '   score ' + (score | 0) + '   best ' + best +
+    'level ' + levelN + '   score ' + (score | 0) + '   best ' + best +
     log + '\n\nSTART to try again'
   );
   objText.setText('');
@@ -1027,7 +1032,6 @@ function pushBullet(owner, w, ox, oy, ang, dmg, range, isPlayer, crit) {
     life: (range / w.speed) | 0,
     dmg,
     owner: isPlayer ? 'p' : 'e',
-    from: owner,
     pierce: w.pierce,
     hits: new Set(),
     bounce: w.bounce,
@@ -1073,11 +1077,11 @@ function fireOnce(owner, w) {
 // ========================================================================
 function makeEnemy(id, x, y, tier) {
   const e = ENEMIES[id];
-  const hpScale = (1 + tier * 1.5) * 0.7;
+  const hp = e.hp * (1 + tier * 1.5) * 0.7 | 0;
   return {
     type: id,
     x, y, vx: 0, vy: 0, facing: Math.random() * Math.PI * 2,
-    hp: e.hp * hpScale | 0, maxHp: e.hp * hpScale | 0,
+    hp, maxHp: hp,
     weapon: makeWeaponInst(e.weapon),
     state: 'patrol',
     alert: 0,
@@ -1097,9 +1101,10 @@ function makeEnemy(id, x, y, tier) {
 }
 
 function emitNoise(x, y, radius, source, alertGain = 0.6) {
+  const r2 = radius * radius;
   for (const e of enemies) {
     if (e === source) continue;
-    if (Math.hypot(e.x - x, e.y - y) < radius) {
+    if (d2(e.x, e.y, x, y) < r2) {
       e.lastSeen = { x, y };
       if (e.state === 'patrol') e.state = 'alert';
       e.alert = Math.max(e.alert, alertGain);
@@ -1162,7 +1167,7 @@ function updateAI(e) {
   } else if (e.state === 'engage') {
     e.facing += angDiff(ang, e.facing) * 0.2;
     e.aim = ang;
-    const wantRange = preferredRange(e.type);
+    const wantRange = def.pr || 220;
     if (los) {
       if (d > wantRange * 1.2) moveTowards(e, player.x, player.y, def.speed);
       else if (d < wantRange * 0.6) moveAway(e, player.x, player.y, def.speed * 0.8);
@@ -1207,14 +1212,6 @@ function updateAI(e) {
   if (blocked) e.blockedTicks++; else e.blockedTicks = 0;
   if (e.blockedTicks > 18 && e.patrolTarget) { e.patrolTarget = null; e.blockedTicks = 0; }
   e.prevX = e.x; e.prevY = e.y;
-}
-
-function preferredRange(type) {
-  if (type === 'sniper') return 380;
-  if (type === 'bruiser') return 130;
-  if (type === 'pyro') return 110;
-  if (type === 'runner') return 150;
-  return 220;
 }
 
 // moveTowards turns to face the target; moveAway preserves facing so a
@@ -1366,7 +1363,12 @@ function explode(x, y, radius, dmg, owner) {
   for (const e of enemies) {
     if (e.hp <= 0) continue;
     const dd = Math.hypot(e.x - x, e.y - y);
-    if (dd < radius) damageEnemy(e, { dmg: dmg * (1 - dd / radius), vx: e.x - x, vy: e.y - y, knock: 5, vamp: 0, exp: 1 });
+    if (dd < radius) {
+      const dn = dd || 1;
+      e.knockX += (e.x - x) / dn * 5;
+      e.knockY += (e.y - y) / dn * 5;
+      damageEnemy(e, { dmg: dmg * (1 - dd / radius), vx: e.x - x, vy: e.y - y, exp: 1 });
+    }
   }
   // chain barrels
   for (const p of props) {
@@ -1393,11 +1395,6 @@ function damageEnemy(e, b) {
   let dmg = b.dmg | 0;
   if (b.crit) dmg = Math.max(dmg, e.hp);   // headshot: guaranteed kill
   e.hp -= dmg;
-  if (b.knock) {
-    const a = Math.atan2(b.vy, b.vx);
-    e.knockX += Math.cos(a) * b.knock;
-    e.knockY += Math.sin(a) * b.knock;
-  }
   e.alert = 1; e.state = 'engage'; e.lastSeen = { x: player.x, y: player.y };
   // Visceral feedback on every hit: spray blood + a crunchy impact tone.
   // Crits show a yellow flash particle on top of the red spray.
@@ -1414,13 +1411,11 @@ function damageEnemy(e, b) {
     const heal = dmg * b.vamp;
     player.hp = Math.min(player.maxHp, player.hp + heal);
   }
-  if (b.burn) {
-    if ((e.burn || 0) < b.burn) e.burn = b.burn;
-    if ((e.burnDmg || 0) < b.burnDmg) e.burnDmg = b.burnDmg;
-  }
-  if (b.poison) {
-    if ((e.poison || 0) < b.poison) e.poison = b.poison;
-    if ((e.poisonDmg || 0) < b.poisonDmg) e.poisonDmg = b.poisonDmg;
+  for (const k of ['burn', 'poison']) {
+    if (!b[k]) continue;
+    if ((e[k] || 0) < b[k]) e[k] = b[k];
+    const dk = k + 'Dmg';
+    if ((e[dk] || 0) < b[dk]) e[dk] = b[dk];
   }
   if (e.hp <= 0) killEnemy(e, b.crit ? 'headshot' : b.exp ? 'explosion' : 'normal');
 }
@@ -1447,7 +1442,6 @@ function killEnemy(e, cause) {
 }
 
 function damagePlayer(d) {
-  if (player.iframes > 0) return;
   if (player.armor > 0) {
     const a = Math.min(player.armor, d);
     player.armor -= a; d -= a;
@@ -1559,11 +1553,16 @@ function runTick() {
     if (consumePress('START1')) startRun();
     return;
   }
+  if (mode === 'pause') {
+    if (consumePress('START1')) { mode = 'play'; titleText.setText(''); msgText.setText(''); }
+    return;
+  }
+  if (consumePress('START1')) { goTitle(); mode = 'pause'; titleText.setText('PAUSED'); return; }
   controlPlayer();
   for (const e of enemies) {
     updateAI(e);
-    tickDot(e, 'burn', 'burnDmg', FIRE_COLS);
-    tickDot(e, 'poison', 'poisonDmg', POISON_COLS);
+    tickDot(e, 'burn', FIRE_COLS);
+    tickDot(e, 'poison', POISON_COLS);
   }
   for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) enemies.splice(i, 1);
   updateBullets();
@@ -1614,7 +1613,7 @@ function runTick() {
     }
     if (mission.alarm) tickAlarm(mission);
     // Mission complete celebration — fires once per level.
-    if (!mission.celebrated && missionComplete()) {
+    if (!mission.celebrated && mission.type !== 'extract' && missionComplete()) {
       mission.celebrated = true;
       showToast('MISSION COMPLETE\nreach portal to extract', '#66ffaa');
       blip(660, 0.18, 'sine', 0.08);
@@ -1716,25 +1715,24 @@ const sc = (G, lw, c, a, x, y, r) => G.lineStyle(lw, c, a).strokeCircle(x, y, r)
 const sr = (G, lw, c, a, x, y, w, h) => G.lineStyle(lw, c, a).strokeRect(x, y, w, h);
 const ln = (G, lw, c, a, x1, y1, x2, y2) => G.lineStyle(lw, c, a).lineBetween(x1, y1, x2, y2);
 // Polygon: pts is an array of [x, y]; fills with color/alpha.
-function polyFill(G, c, a, pts) {
-  G.fillStyle(c, a);
+// Shared poly tracer: moveTo first vert, lineTo rest.
+function _poly(G, pts) {
   G.beginPath();
   G.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) G.lineTo(pts[i][0], pts[i][1]);
-  G.closePath(); G.fillPath();
 }
-// Track + fill horizontal bar. Used for HP / mag / progress displays.
-function bar(G, x, y, w, h, frac, trackCol, fillCol) {
-  fr(G, trackCol, 1, x, y, w, h);
-  fr(G, fillCol, 1, x, y, w * frac, h);
+function polyFill(G, c, a, pts) {
+  G.fillStyle(c, a); _poly(G, pts); G.closePath(); G.fillPath();
 }
 function polyStroke(G, lw, c, a, pts, closed) {
-  G.lineStyle(lw, c, a);
-  G.beginPath();
-  G.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 1; i < pts.length; i++) G.lineTo(pts[i][0], pts[i][1]);
+  G.lineStyle(lw, c, a); _poly(G, pts);
   if (closed) G.closePath();
   G.strokePath();
+}
+function bar(G, x, y, w, h, frac, trackCol, fillCol, outA) {
+  fr(G, trackCol, 1, x, y, w, h);
+  fr(G, fillCol, 1, x, y, w * frac, h);
+  if (outA) sr(G, 1, 0xffffff, outA, x, y, w, h);
 }
 // Stroke a partial circular arc starting at the top, sweeping clockwise.
 // Used for both reload progress around the player and hack progress on the
@@ -1750,20 +1748,16 @@ function render() {
   g.clear();
   gHud.clear();
   // Toast update (any mode). Fade alpha over last 30 ticks.
-  if (toast.t > 0) {
-    toastText.setText(toast.text);
-    toastText.setColor(toast.col);
-    toastText.setAlpha(toast.t < 30 ? toast.t / 30 : 1);
-  } else if (toastText.text) {
-    toastText.setText('');
-  }
+  const tt = toast.t;
+  toastText.setAlpha(tt > 0 ? (tt < 30 ? tt / 30 : 1) : 0);
+  if (tt > 0) { toastText.setText(toast.text); toastText.setColor(toast.col); }
   if (mode === 'title' || mode === 'gameover') {
     if (mode === 'title') drawMap();
     return;
   }
   drawMap();
-  drawBloodStains();   // permanent floor splatter
-  drawCorpses();       // dead enemies stay rendered beneath live entities
+  for (const s of bloodStains) fc(g, s.col, s.a, s.x, s.y, s.r);
+  for (const c of corpses) drawCorpse(c);
   drawProps();
   drawPickups();
   drawPortal();
@@ -1854,11 +1848,12 @@ function drawPerson(x, y, ang, pal, weaponFn, a, k) {
   }
   // Weapon springs from between the arms (just below the head).
   if (weaponFn) { const wp = T(0, -10); weaponFn(wp[0], wp[1], ang); }
-  // Head — single skin-color circle (avg of the old outer/inner radii =
-  // 6.75) with a black outline for definition.
-  const hp = T(0, -3);
-  fc(g, pal.headInner, a, hp[0], hp[1], 6.75 * k);
-  sc(g, 1.2, 0x000000, a * 0.7, hp[0], hp[1], 6.75 * k);
+  headDot(T(0, -3), pal.headInner, a, k);
+}
+// Head: filled skin circle + black outline. Shared by live person and corpse.
+function headDot(hp, skin, a, k) {
+  fc(g, skin, a, hp[0], hp[1], 6.75 * k);
+  sc(g, 1.2, 0, a * 0.7, hp[0], hp[1], 6.75 * k);
 }
 
 function drawPlayer() {
@@ -1894,17 +1889,9 @@ function drawWeaponIcon(gx, x, y, w, ang, scale) {
   // Local rotation: (K along barrel, J along perpendicular) → world coords.
   const ox = (K, J) => x + cx * K + px * J;
   const oy = (K, J) => y + sx * K + py * J;
-  let len, thick = 2;
-  switch (w.id) {
-    case 'sniper':   len = 22 * s; break;
-    case 'lmg':      len = 17 * s; thick = 3.5; break;
-    case 'rifle':    len = 18 * s; break;
-    case 'burst':    len = 18 * s; break;
-    case 'launcher': len = 13 * s; thick = 4; break;
-    case 'shotgun':  len = 13 * s; break;
-    case 'smg':      len = 13 * s; break;
-    default:         len = 11 * s;
-  }
+  const WL = { sniper:[22], lmg:[17,3.5], rifle:[18], burst:[18], launcher:[13,4], shotgun:[13], smg:[13] };
+  const wl = WL[w.id] || [11];
+  const len = wl[0] * s, thick = wl[1] || 2;
   gx.lineStyle(thick, c, 1);
   gx.lineBetween(x, y, ox(len, 0), oy(len, 0));
   if (w.id === 'shotgun') {
@@ -1942,17 +1929,6 @@ function drawWeaponIcon(gx, x, y, w, ang, scale) {
 }
 
 // Permanent blood pool layer — drawn just above the floor, below everything
-// else. Cheap fillCircle per stain.
-function drawBloodStains() {
-  for (const s of bloodStains) fc(g, s.col, s.a, s.x, s.y, s.r);
-}
-
-// Faded corpses — same shape as the live enemy but darker alpha and no
-// weapon/HP overlay. A small inner blood spot underneath sells the kill.
-function drawCorpses() {
-  for (const c of corpses) drawCorpse(c);
-}
-
 // Lying-down dead body: torso, splayed arms/legs, head — with variants per
 // cause of death (headshot = no head, explosion = scattered limbs, burn =
 // charred, poison = green skin). Matches drawPerson scale + detail.
@@ -1995,11 +1971,7 @@ function drawCorpse(c) {
     polyFill(g, torso, a, body);
     limb(T(5, 10),  T(7, 24),    T(2, 38),  torso, torso, 7);
     limb(T(-5, 10), T(-11, 25),  T(-3, 38), torso, torso, 7);
-    if (!hs) {
-      const hp = T(0, -15);
-      fc(g, skin, a, hp[0], hp[1], 6.75 * k);
-      sc(g, 1.2, 0x000000, a * 0.7, hp[0], hp[1], 6.75 * k);
-    }
+    if (!hs) headDot(T(0, -15), skin, a, k);
   }
 }
 
@@ -2113,7 +2085,7 @@ function drawExplosions() {
 
 function drawParticles() {
   for (const p of particles) {
-    const a = Math.min(1, p.life / (p.max || 18));
+    const a = p.life / (p.max || 18);
     if (p.ring) sc(g, 2, p.col, a, p.x, p.y, p.r * (1 - a) + 4);
     else fc(g, p.col, a, p.x, p.y, p.r * a);
   }
@@ -2227,22 +2199,19 @@ function drawHud() {
 
   // HP bar (red track + green/red fill).
   const hpFrac = Math.max(0, player.hp / player.maxHp);
-  bar(gHud, 8, 16, 200, 10, hpFrac, 0x331818, player.hp < player.maxHp * 0.3 ? 0xff4040 : 0x44ff66);
-  sr(gHud, 1, 0xffffff, 0.8, 8, 16, 200, 10);
+  bar(gHud, 8, 16, 200, 10, hpFrac, 0x331818, player.hp < player.maxHp * 0.3 ? 0xff4040 : 0x44ff66, 0.8);
   // Armor bar (blue), thinner, just below HP.
   const arFrac = Math.max(0, player.armor / player.maxArmor);
-  bar(gHud, 8, 28, 200, 6, arFrac, 0x102030, 0x66bbff);
-  sr(gHud, 1, 0xffffff, 0.6, 8, 28, 200, 6);
+  bar(gHud, 8, 28, 200, 6, arFrac, 0x102030, 0x66bbff, 0.6);
 
   // Mag bar — orange while reloading, yellow otherwise.
   const w = curWeapon();
   const maxMag = w.mag;
   if (w.reloading > 0) {
-    bar(gHud, 220, 16, 140, 16, 1 - w.reloading / w.reload, 0x332200, 0xffaa00);
+    bar(gHud, 220, 16, 140, 16, 1 - w.reloading / w.reload, 0x332200, 0xffaa00, 0.8);
   } else {
-    bar(gHud, 220, 16, 140, 16, w.ammo / Math.max(1, maxMag), 0x222a33, 0xfff0a0);
+    bar(gHud, 220, 16, 140, 16, w.ammo / Math.max(1, maxMag), 0x222a33, 0xfff0a0, 0.8);
   }
-  sr(gHud, 1, 0xffffff, 0.8, 220, 16, 140, 16);
   drawWeaponIcon(gHud, 384, 24, w, 0, 1.15);
 
   if (portal) {
@@ -2260,12 +2229,11 @@ function drawHudCompass(w, maxMag) {
   const colDir = missionComplete() ? 0x66ffaa : 0x886655;
   sc(gHud, 2, colDir, 0.9, cx, cy, 14);
   // Triangular needle pointing toward portal.
-  const tipX = cx + Math.cos(a) * 14, tipY = cy + Math.sin(a) * 14;
-  const baseX = cx - Math.cos(a) * 8, baseY = cy - Math.sin(a) * 8;
-  const ax = -Math.sin(a) * 5, ay = Math.cos(a) * 5;
-  polyFill(gHud, colDir, 1, [
-    [tipX, tipY], [baseX + ax, baseY + ay], [baseX - ax, baseY - ay],
-  ]);
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const tx = cx + ca * 14, ty = cy + sa * 14;
+  const bx = cx - ca * 8, by = cy - sa * 8;
+  const nx = -sa * 5, ny = ca * 5;
+  polyFill(gHud, colDir, 1, [[tx, ty], [bx + nx, by + ny], [bx - nx, by - ny]]);
   // Multiline status text.
   const modList = ws => ws.map(m => MODS[m].name.toLowerCase()).join(', ');
   const modsStr = w.mods.length ? modList(w.mods) : '—';
@@ -2291,7 +2259,9 @@ function drawObjective() {
     if (timerText) timerText.setText('');
     return;
   }
-  objText.setText(MISSIONS[mission.type].objective(mission));
+  let obj = MISSIONS[mission.type].objective(mission);
+  if (nearestPickup(player.x, player.y, PICKUP_R + 6)) obj += '   · press O';
+  objText.setText(obj);
   // Big stealth timer top-right under GPS — yellow active, red <15s,
   // ALARM red when expired. Hidden during the 2s detection grace.
   if (mission.alarm) {
@@ -2426,12 +2396,19 @@ async function loadBest() {
     const s = window.platanusArcadeStorage;
     if (!s) return;
     const r = await s.get('trigon-best');
-    if (r && r.found && typeof r.value === 'object' && typeof r.value.best === 'number') {
-      best = r.value.best | 0;
+    if (r && r.found && r.value) {
+      if (typeof r.value.best === 'number') best = r.value.best | 0;
+      if (Array.isArray(r.value.scores)) bestScores = r.value.scores.filter(b => b && typeof b.s === 'number').slice(0, 5);
       if (mode === 'title') goTitle();
     }
   } catch {}
 }
 async function saveBest() {
-  try { await window.platanusArcadeStorage.set('trigon-best', { best }); } catch {}
+  try { await window.platanusArcadeStorage.set('trigon-best', { best, scores: bestScores }); } catch {}
+}
+function recordScore(s, lv) {
+  if (s <= 0) return;
+  bestScores.push({ s, lv });
+  bestScores.sort((a, b) => b.s - a.s);
+  if (bestScores.length > 5) bestScores.length = 5;
 }
