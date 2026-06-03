@@ -53,7 +53,7 @@ const WEAPONS = {
   pistol:   { dmg: 14, rate: 16, mag: 12, reload: 50, spread: 0.04, range: 340, speed: 14, n: 1, trigger: 'semi',   bcol: 0xffffff, name: 'PISTOL' },
   shotgun:  { dmg: 7,  rate: 32, mag: 6,  reload: 85, spread: 0.32, range: 220, speed: 13, n: 7, trigger: 'semi',   bcol: 0xffaa44, name: 'SHOTGUN' },
   smg:      { dmg: 5,  rate: 5,  mag: 30, reload: 60, spread: 0.16, range: 250, speed: 14, n: 1, trigger: 'auto',   bcol: 0xfff0a0, name: 'SMG' },
-  rifle:    { dmg: 11, rate: 9,  mag: 25, reload: 70, spread: 0.05, range: 380, speed: 16, n: 1, trigger: 'auto',   bcol: 0xffffff, name: 'RIFLE' },
+  rifle:    { dmg: 20, rate: 12, mag: 24, reload: 60, spread: 0.03, range: 420, speed: 16, n: 1, trigger: 'semi',   bcol: 0xffffff, name: 'RIFLE' },
   burst:    { dmg: 13, rate: 24, mag: 24, reload: 65, spread: 0.04, range: 360, speed: 16, n: 1, trigger: 'burst3', bcol: 0xc0e0ff, name: 'BURST RIFLE' },
   sniper:   { dmg: 80, rate: 60, mag: 4,  reload: 95, spread: 0.0,  range: 900, speed: 22, n: 1, trigger: 'semi',   pierce: 3, bcol: 0x66ccff, name: 'SNIPER' },
   lmg:      { dmg: 8,  rate: 4,  mag: 80, reload: 150, spread: 0.18, range: 320, speed: 14, n: 1, trigger: 'auto',  bcol: 0xffe070, name: 'LMG' },
@@ -68,7 +68,7 @@ const MODS = {
   pierce:   { name: 'PIERCE',    desc: '+1 pierce',       apply: w => { w.pierce = (w.pierce || 0) + 1; } },
   expl:     { name: 'EXPLOSIVE', desc: '+blast radius & dmg', apply: w => { w.exp = (w.exp || 0) + 36; w.expDmg = (w.expDmg || 0) + 10; } },
   vamp:     { name: 'LIFESTEAL', desc: 'heal 8% damage',  apply: w => { w.vamp = (w.vamp || 0) + 0.08; } },
-  crit:     { name: 'CRIT',      desc: '+25% headshot (base 5%)', cap: 4, apply: w => { w.crit = (w.crit || 0) + 0.25; } },
+  crit:     { name: 'CRIT',      desc: '+25% headshot (base 3%)', cap: 4, apply: w => { w.crit = (w.crit || 0) + 0.25; } },
   ricochet: { name: 'RICOCHET',  desc: '+1 bounce',       apply: w => { w.bounce = (w.bounce || 0) + 1; } },
   magnum:   { name: 'MAGNUM',    desc: '+40% damage',     apply: w => { w.dmg = w.dmg * 1.4; } },
   silenced: { name: 'SILENCED',  desc: 'no noise',        cap: 1, apply: w => { w.silent = true; } },
@@ -448,7 +448,7 @@ function goTitle() {
   titleText.setText('ONE MORE EXTRACTION');
   const pad = n => ('       ' + n).slice(-7);
   const scores = bestScores.length
-    ? '\n────── TOP SCORES ──────\n' + bestScores.map((b, i) => (i + 1) + '.  ' + pad(b.s) + '   lv ' + b.lv).join('\n')
+    ? '\n\nTOP SCORES\n' + bestScores.map((b, i) => (i + 1) + '.  ' + pad(b.s) + '   lv ' + b.lv).join('\n')
     : '';
   msgText.setText(
     '─ CONTROLS ─\n' +
@@ -492,6 +492,8 @@ function enterLevel() {
   spawnGuaranteedMod();      // first — claims the deepest cul-de-sac for the MOD
   spawnDeadEndRewards();     // then — fills the next 2-4 off-path rooms with weapon/health/ammo
   setupMission();
+  // DEBUG: drop every weapon next to player start.
+  // WEAPON_IDS.forEach((id, i) => pickups.push({ x: player.x + 30 + i * 36, y: player.y + 40, kind: 'weapon', wInst: makeWeaponInst(id) }));
   mode = 'play';
   msgText.setText('');
   titleText.setText('');
@@ -1021,6 +1023,8 @@ function controlPlayer() {
       sfxPickup();
     } else if (player.weapons.length > 1) {
       player.weaponIdx = (player.weaponIdx + 1) % player.weapons.length;
+      player.burstLeft = 0;
+      pressed.P1_1 = false;
     }
   }
 
@@ -1073,7 +1077,7 @@ function fireOnce(owner, w) {
   for (let i = 0; i < n; i++) {
     const spr = (Math.random() - 0.5) * 2 * w.spread;
     const a = aim + spr + (n > 1 ? (i - (n - 1) / 2) * (w.spread * 0.4) : 0);
-    const crit = isPlayer && Math.random() < ((w.crit || 0) + 0.05);
+    const crit = isPlayer && Math.random() < ((w.crit || 0) + 0.03);
     pushBullet(owner, w, muzzleX, muzzleY, a, baseDmg, range, isPlayer, crit);
   }
   particles.push({ x: owner.x, y: owner.y, vx: 0, vy: 0, life: 4, col: 0xfff0a0, r: 5 });
@@ -1865,15 +1869,15 @@ function drawPlayer() {
   const ang = player.facing;
   const w = curWeapon();
   const reloading = w.reloading > 0;
+  if (w.laser && !reloading) {
+    const d = rayDistToWall(player.x, player.y, ang, w.range);
+    ln(g, 1, 0xff3333, 0.65, player.x, player.y, player.x + Math.cos(ang) * d, player.y + Math.sin(ang) * d);
+  }
   drawPerson(player.x, player.y, ang, {
     torso:     hit ? 0xff4466 : 0x303030,   // jacket
     arm:       hit ? 0xff8866 : 0x484848,   // sleeve (lighter shade)
     headInner: hit ? 0xffeeee : 0xffd8a0,   // skin
   }, reloading ? null : (wx, wy, wang) => drawWeaponIcon(g, wx, wy, w, wang, 1), a);
-  if (w.laser && !reloading) {
-    const d = rayDistToWall(player.x, player.y, ang, w.range);
-    ln(g, 1, 0xff3333, 0.65, player.x, player.y, player.x + Math.cos(ang) * d, player.y + Math.sin(ang) * d);
-  }
   if (reloading) {
     const total = w.reload;
     const frac = 1 - w.reloading / total;
@@ -1890,41 +1894,41 @@ function drawWeaponIcon(gx, x, y, w, ang, scale) {
   // Local rotation: (K along barrel, J along perpendicular) → world coords.
   const ox = (K, J) => x + cx * K + px * J;
   const oy = (K, J) => y + sx * K + py * J;
-  const WL = { sniper:[22], lmg:[17,3.5], rifle:[18], burst:[18], launcher:[13,4], shotgun:[13], smg:[13] };
+  const WL = { sniper:[30,2], lmg:[17,3.5], rifle:[22], burst:[22], launcher:[22,6,0x44cc44], shotgun:[13], smg:[13] };
   const wl = WL[w.id] || [11];
   const len = wl[0] * s, thick = wl[1] || 2;
-  gx.lineStyle(thick, c, 1);
-  gx.lineBetween(x, y, ox(len, 0), oy(len, 0));
+  if (w.id !== 'shotgun') {
+    gx.lineStyle(thick, wl[2] || c, 1);
+    gx.lineBetween(x, y, ox(len, 0), oy(len, 0));
+  }
   if (w.id === 'shotgun') {
+    // Double-barrel — 2 parallel tubes (top-down).
     gx.lineStyle(2, c, 1);
-    gx.lineBetween(ox(0, 2.5), oy(0, 2.5), ox(len, 2.5), oy(len, 2.5));
-    gx.lineBetween(ox(0, -2.5), oy(0, -2.5), ox(len, -2.5), oy(len, -2.5));
+    gx.lineBetween(ox(0, 1.5), oy(0, 1.5), ox(len, 1.5), oy(len, 1.5));
+    gx.lineBetween(ox(0, -1.5), oy(0, -1.5), ox(len, -1.5), oy(len, -1.5));
     gx.fillStyle(0x553322, 1).fillCircle(ox(-2, 0), oy(-2, 0), 3 * s);
   } else if (w.id === 'sniper') {
-    gx.fillStyle(c, 1).fillCircle(ox(len * 0.4, 4), oy(len * 0.4, 4), 2.2 * s);
-    gx.lineStyle(1, c, 0.7);
-    gx.lineBetween(ox(len * 0.4, 0), oy(len * 0.4, 0), ox(len * 0.4, 4), oy(len * 0.4, 4));
-    gx.fillStyle(0xddeeff, 1).fillCircle(ox(len, 0), oy(len, 0), 2);
-  } else if (w.id === 'launcher') {
-    gx.fillStyle(c, 1);
-    gx.beginPath();
-    gx.moveTo(ox(len, 4), oy(len, 4));
-    gx.lineTo(x + cx * (len + 4), y + sx * (len + 4));
-    gx.lineTo(ox(len, -4), oy(len, -4));
-    gx.closePath(); gx.fillPath();
+    // Scope mounted on top of the thin barrel — 10×4 px section, darker tone.
+    gx.lineStyle(4 * s, 0xccf0ff, 1);
+    gx.lineBetween(ox(len * 0.27, 0), oy(len * 0.27, 0), ox(len * 0.6, 0), oy(len * 0.6, 0));
   } else if (w.id === 'lmg') {
-    gx.fillStyle(c, 1).fillCircle(ox(4, 4), oy(4, 4), 4 * s);
-    gx.lineStyle(1, 0x222, 1).strokeCircle(ox(4, 4), oy(4, 4), 4 * s);
-  } else if (w.id === 'smg') {
-    const mx = ox(5, 3), my = oy(5, 3);
-    gx.fillStyle(c, 1).fillRect(mx - 1.5, my - 1.5, 3 * s, 6 * s);
-  } else if (w.id === 'rifle' || w.id === 'burst') {
-    gx.fillStyle(c, 1).fillCircle(ox(len * 0.55, -3), oy(len * 0.55, -3), 1.6 * s);
-    if (w.id === 'burst') {
-      gx.fillCircle(ox(len * 0.75, -3), oy(len * 0.75, -3), 1.4 * s);
-    }
-  } else if (w.id === 'pistol') {
-    gx.fillStyle(c, 0.8).fillCircle(ox(-2, 0), oy(-2, 0), 2.2 * s);
+    // Long box magazine under the barrel.
+    gx.lineStyle(5, c, 1);
+    gx.lineBetween(ox(len * 0.25, -5), oy(len * 0.25, -5), ox(len * 0.65, -5), oy(len * 0.65, -5));
+    // Thin barrel extension past the muzzle.
+    gx.lineStyle(1.5, c, 1);
+    gx.lineBetween(ox(len, 0), oy(len, 0), ox(len + 8, 0), oy(len + 8, 0));
+  } else if (w.id === 'flamer') {
+    // Twin fuel tank backpack — sits behind the player.
+    gx.fillStyle(c, 1);
+    gx.fillCircle(ox(-22, 4), oy(-22, 4), 4 * s);
+    gx.fillCircle(ox(-22, -4), oy(-22, -4), 4 * s);
+  } else if (w.id === 'smg' || w.id === 'rifle' || w.id === 'burst') {
+    // Receiver (thicker middle) + perpendicular magazine.
+    gx.lineStyle(4, c, 1);
+    gx.lineBetween(ox(len * 0.15, 0), oy(len * 0.15, 0), ox(len * 0.55, 0), oy(len * 0.55, 0));
+    gx.lineStyle(1, 0, 1);
+    gx.lineBetween(ox(len * 0.2, 0), oy(len * 0.2, 0), ox(len * 0.55, 0), oy(len * 0.55, 0));
   }
   gx.fillStyle(0x202830, 1).fillCircle(x, y, 2 * s);
 }
@@ -2143,12 +2147,10 @@ function drawProps() {
       fr(g, 0x224488, 1, p.x - 14, p.y - 14, 28, 28);
       sr(g, 2, 0x66ccff, 1, p.x - 14, p.y - 14, 28, 28);
       fr(g, 0x66ccff, 0.6 + 0.4 * Math.sin(frameCount * 0.15), p.x - 10, p.y - 10, 20, 14);
-      // Hack progress ring — per-terminal so multiple nodes show independent fills.
-      if (mission && mission.type === 'hack') {
-        const r = 22, frac = p.progress || 0;
-        sc(g, 3, 0xffcc44, 0.4, p.x, p.y, r);
-        if (frac > 0) arcRing(p.x, p.y, r, frac, 3, 0xffcc44);
-      }
+      // Hack progress ring — shown on every terminal, regardless of mission.
+      const frac = p.progress || 0;
+      sc(g, 3, 0xffcc44, 0.4, p.x, p.y, 22);
+      if (frac > 0) arcRing(p.x, p.y, 22, frac, 3, 0xffcc44);
     } else if (p.kind === 'prize') {
       const pls = 0.6 + 0.4 * Math.sin(frameCount * 0.12);
       fc(g, 0xffd060, 0.25 * pls, p.x, p.y, 28);
