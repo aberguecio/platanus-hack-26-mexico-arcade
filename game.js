@@ -938,6 +938,9 @@ function controlPlayer() {
   if (player.hp <= 0) return;
   applyPlayerMove();
 
+  // Low-HP blood trail: drop a small stain ~1/sec while moving wounded.
+  if (player.hp < player.maxHp * 0.3 && frameCount % 40 === 0) dropStain(player.x, player.y, 0);
+
   // footstep noise: while moving, leak a low-radius ping every 6 ticks
   if ((player.vx !== 0 || player.vy !== 0)) {
     footstepCounter++;
