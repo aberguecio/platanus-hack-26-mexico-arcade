@@ -19,8 +19,8 @@ const PLAYER_BASE_HP = 150;
 const PLAYER_BASE_SPEED = 2.6;
 const PLAYER_R = 11;
 const PICKUP_R = 22;
-const NOISE_GUNSHOT = 290;
-const NOISE_FOOTSTEP = 110;
+const NOISE_GUNSHOT = 320;
+const NOISE_FOOTSTEP = 130;
 const SIGHT_FILL_PER_TICK = 1 / 18;
 const HACK_DURATION = 360;             // ticks ~ 6 seconds
 const BARREL_BLAST = 100;
@@ -80,14 +80,14 @@ const MODS = {
 const MOD_IDS = Object.keys(MODS);
 
 const ENEMIES = {
-  grunt:   { hp: 25, weapon: 'pistol',  speed: 1.1, sight: 420, cone: 1.4, col: 0x88aaff, r: 12, react: 25,  score: 5 },
-  runner:  { hp: 20, weapon: 'smg',     speed: 1.7, sight: 360, cone: 1.6, col: 0xc9a06a, r: 10, react: 18,  score: 7,  pr: 150 },
-  sniper:  { hp: 22, weapon: 'sniper',  speed: 0.9, sight: 720, cone: 1.0, col: 0xcccccc, r: 11, react: 36,  score: 12, pr: 380 },
+  grunt:   { hp: 25, weapon: 'pistol',  speed: 1.1, sight: 420, cone: 1.4, col: 0x88aaff, r: 12, react: 32,  score: 5 },
+  runner:  { hp: 20, weapon: 'smg',     speed: 1.7, sight: 360, cone: 1.6, col: 0xc9a06a, r: 10, react: 22,  score: 7,  pr: 150 },
+  sniper:  { hp: 22, weapon: 'sniper',  speed: 0.8, sight: 720, cone: 1.0, col: 0xcccccc, r: 11, react: 38,  score: 12, pr: 380 },
   bruiser: { hp: 65, weapon: 'shotgun', speed: 0.95,sight: 340, cone: 1.7, col: 0x4d5d2b, r: 16, react: 22,  score: 10, pr: 130 },
-  pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, col: 0xff5522, r: 13, react: 20,  score: 14, pr: 110 },
-  gunner:  { hp: 75, weapon: 'lmg',     speed: 0.75,sight: 380, cone: 2.0, col: 0x778899, r: 14, react: 30,  score: 15 },
-  demo:    { hp: 22, weapon: 'launcher',speed: 1.0, sight: 360, cone: 1.5, col: 0x553388, r: 12, react: 50,  score: 16 },
-  marksman:{ hp: 32, weapon: 'rifle',   speed: 0.95,sight: 520, cone: 1.1, col: 0x555555, r: 11, react: 16,  score: 11 },
+  pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, col: 0xff5522, r: 13, react: 22,  score: 14, pr: 110 },
+  gunner:  { hp: 75, weapon: 'lmg',     speed: 0.8, sight: 380, cone: 2.0, col: 0x778899, r: 14, react: 32,  score: 15 },
+  demo:    { hp: 22, weapon: 'launcher',speed: 0.8, sight: 360, cone: 1.5, col: 0x553388, r: 12, react: 50,  score: 16 },
+  marksman:{ hp: 32, weapon: 'rifle',   speed: 1.0, sight: 520, cone: 1.4, col: 0x555555, r: 11, react: 12,  score: 11 },
 };
 const ENEMY_IDS = Object.keys(ENEMIES);
 // Skin tones used as random head-inner color per enemy spawn.
