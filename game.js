@@ -68,13 +68,13 @@ const MODS = {
   pierce:   { name: 'PIERCE',    desc: '+1 pierce',       apply: w => { w.pierce = (w.pierce || 0) + 1; } },
   expl:     { name: 'EXPLOSIVE', desc: '+blast radius & dmg', apply: w => { w.exp = (w.exp || 0) + 36; w.expDmg = (w.expDmg || 0) + 10; } },
   vamp:     { name: 'LIFESTEAL', desc: 'heal 8% damage',  apply: w => { w.vamp = (w.vamp || 0) + 0.08; } },
-  crit:     { name: 'CRIT',      desc: '+25% headshot (base 3%)', cap: 4, apply: w => { w.crit = (w.crit || 0) + 0.25; } },
+  crit:     { name: 'CRIT',      desc: '+20% headshot', cap: 4, apply: w => { w.crit = (w.crit || 0) + 0.2; } },
   ricochet: { name: 'RICOCHET',  desc: '+1 bounce',       apply: w => { w.bounce = (w.bounce || 0) + 1; } },
   magnum:   { name: 'MAGNUM',    desc: '+40% damage',     apply: w => { w.dmg = w.dmg * 1.4; } },
   silenced: { name: 'SILENCED',  desc: 'no noise',        cap: 1, apply: w => { w.silent = true; } },
   multi:    { name: 'MULTISHOT', desc: '+1 bullet/shot',  apply: w => { w.n = (w.n || 1) + 1; } },
-  incend:   { name: 'INCENDIARY',desc: '+burn DOT (short, hot)',  apply: w => { w.burn = (w.burn || 0) + 60;  if (!w.burnDmg) w.burnDmg = 2; } },
-  poison:   { name: 'POISON',    desc: '+venom DOT (long, slow)', apply: w => { w.poison = (w.poison || 0) + 160; if (!w.poisonDmg) w.poisonDmg = 1; } },
+  incend:   { name: 'INCENDIARY',desc: '+burn',  apply: w => { w.burn = (w.burn || 0) + 60;  if (!w.burnDmg) w.burnDmg = 2; } },
+  poison:   { name: 'POISON',    desc: '+venom', apply: w => { w.poison = (w.poison || 0) + 160; if (!w.poisonDmg) w.poisonDmg = 1; } },
   laser:    { name: 'LASER',     desc: '+15% range, -50% spread', cap: 1, apply: w => { w.range *= 1.15; w.spread *= 0.5; w.laser = true; } },
 };
 const MOD_IDS = Object.keys(MODS);
@@ -87,6 +87,7 @@ const ENEMIES = {
   pyro:    { hp: 55, weapon: 'flamer',  speed: 1.05,sight: 320, cone: 1.6, col: 0xff5522, r: 13, react: 20,  score: 14, pr: 110 },
   gunner:  { hp: 75, weapon: 'lmg',     speed: 0.75,sight: 380, cone: 2.0, col: 0x778899, r: 14, react: 30,  score: 15 },
   demo:    { hp: 22, weapon: 'launcher',speed: 1.0, sight: 360, cone: 1.5, col: 0x553388, r: 12, react: 50,  score: 16 },
+  marksman:{ hp: 32, weapon: 'rifle',   speed: 0.95,sight: 520, cone: 1.1, col: 0x555555, r: 11, react: 16,  score: 11 },
 };
 const ENEMY_IDS = Object.keys(ENEMIES);
 // Skin tones used as random head-inner color per enemy spawn.
@@ -100,9 +101,9 @@ const SKINS = [0xffe0b8, 0xf2cba0, 0xe0a878, 0xc08858, 0xa06838, 0x704020, 0x3a2
 // Codename + faction tables (used by spawn naming + objText/death screen).
 const FIRE_COLS = [0xff4422, 0xff8833, 0xffcc44, 0xffee88];
 const POISON_COLS = [0x33aa22, 0x66cc44, 0xaaee55, 0xccff88];
-const ADJECTIVES = ['GHOST','BLIND','SILENT','HOLLOW','IRON','PALE','GREY','LAST'];
-const NOUNS      = ['CARDINAL','ORCHID','VESPER','SPIRE','HARROW','EMBER','OBELISK','SAINT'];
-const FACTIONS   = ['THE HOLLOW','OBSIDIAN','BLACK TIDE','GLASSWORKS'];
+const ADJECTIVES = ['GHOST','BLIND','SILENT','HOLLOW','IRON','SEED','VESTED','LAST'];
+const NOUNS      = ['CARDINAL','ANGEL','VESPER','DAEMON','KERNEL','TOKEN','FOUNDER','UNICORN'];
+const FACTIONS   = ['THE HOLLOW','OBSIDIAN','BLACK TIDE','PLATANUS'];
 
 // ========================================================================
 // 4. MATH & HELPER UTILS (used everywhere — keep small + pure)
@@ -141,9 +142,18 @@ function tickDot(e, key, pal) {
   });
   if ((e[key] & 7) === 0) {
     e.hp -= e[key + 'Dmg'];
-    if (e.hp <= 0) killEnemy(e, key);
+    if (e.hp <= 0) e === player ? gameOver() : killEnemy(e, key);
   }
   e[key]--;
+}
+// Copy burn/poison DOTs from a bullet onto a target (enemy or player).
+function applyDot(t, b) {
+  for (const k of ['burn', 'poison']) {
+    if (!b[k]) continue;
+    if ((t[k] || 0) < b[k]) t[k] = b[k];
+    const dk = k + 'Dmg';
+    if ((t[dk] || 0) < b[dk]) t[dk] = b[dk];
+  }
 }
 // Size of the world for a given level. Caps prevent runaway memory + camera.
 function sizeForLevel(n) {
@@ -448,19 +458,19 @@ function goTitle() {
   titleText.setText('ONE MORE EXTRACTION');
   const pad = n => ('       ' + n).slice(-7);
   const scores = bestScores.length
-    ? '\n\nTOP SCORES\n' + bestScores.map((b, i) => (i + 1) + '.  ' + pad(b.s) + '   lv ' + b.lv).join('\n')
+    ? '\n\nTOP SCORES\n' + bestScores.map((b, i) => i+1 + '. ' + pad(b.s) + ' lv ' + b.lv).join('\n')
     : '';
   msgText.setText(
-    '─ CONTROLS ─\n' +
-    'WASD move    U fire    I reload    O pickup\n' +
-    'ENTER  start / pause\n\n' +
-    '─ INTEL ─\n' +
+    'CONTROLS\n\n' +
+    'WASD move   U fire   I reload   O pickup\n' +
+    'ENTER start/pause\n\n' +
+    'INTEL\n\n' +
     'enemies see in cones, hear shots and footsteps\n' +
-    'hack terminals to reset alarm and timer\n' +
+    'hack terminals to reset alarm\n' +
     'pick up weapons · stack mods · watch your ammo\n' +
-    'missions: escape · destroy · rescue · eliminate · hack · heist' +
+    'escape · destroy · rescue · eliminate · hack · heist' +
     scores +
-    '\n\n[ START to play ]'
+    '\n\nSTART to play'
   );
   objText.setText('');
 }
@@ -594,11 +604,11 @@ const MISSIONS = {
 function chooseMission(n) {
   if (n === 1) return { type: 'extract' };
   const r = Math.random();
-  if (r < 0.18) return { type: 'extract' };
-  if (r < 0.36) return { type: 'destroy' };
-  if (r < 0.54) return { type: 'rescue', freed: false };
-  if (r < 0.72) return { type: 'eliminate', killed: false };
-  if (r < 0.86) return { type: 'hack' };
+  if (r < 0.15) return { type: 'extract' };
+  if (r < 0.32) return { type: 'destroy' };
+  if (r < 0.49) return { type: 'rescue', freed: false };
+  if (r < 0.66) return { type: 'eliminate', killed: false };
+  if (r < 0.83) return { type: 'hack' };
   return { type: 'heist', carrying: false };
 }
 function missionTitle(m) { return 'MISSION: ' + m.type.toUpperCase(); }
@@ -683,7 +693,8 @@ function spawnEnemies() {
   if (levelN >= 2) types.push('runner');
   if (levelN >= 4) types.push('bruiser');
   if (levelN >= 5) types.push('sniper');
-  if (levelN >= 6) types.push('pyro');
+  if (levelN >= 3) types.push('pyro');
+  if (levelN >= 6) types.push('marksman');
   if (levelN >= 7) types.push('gunner');
   if (levelN >= 8) types.push('demo');
   let placed = 0;
@@ -700,7 +711,7 @@ function spawnEnemies() {
   const budget = Math.max(0, 8 + levelN * 3.2 - placed * 1.5);
   const phase2Clear = 280 * Math.sqrt(safeFactor / 0.4);
   let pts = budget;
-  const P2 = [[5,0.18,'sniper'],[4,0.36,'bruiser'],[6,0.50,'pyro'],[2,0.66,'runner'],[7,0.76,'gunner'],[8,0.84,'demo']];
+  const P2 = [[5,0.18,'sniper'],[4,0.36,'bruiser'],[3,0.50,'pyro'],[2,0.66,'runner'],[7,0.76,'gunner'],[8,0.84,'demo']];
   while (pts > 0) {
     const r = Math.random();
     let id = 'grunt';
@@ -854,6 +865,7 @@ function spawnDeadEndRewards() {
 
 function nextLevel() {
   if (mission) MISSIONS[mission.type].end?.(mission, true);
+  score += 50 * levelN;
   levelN++;
   if (levelN - 1 > best) { best = levelN - 1; saveBest(); }
   player.hp = player.maxHp;   // full heal between levels
@@ -871,9 +883,10 @@ function gameOver() {
     ? '\n\n' + runHistory.map(h => 'L' + h.level + ' ' + h.fate + ' ' + h.name).join('\n')
     : '';
   titleText.setText('YOU DIED');
+  hudText.setText(timerText.text = '');
   msgText.setText(
     'level ' + levelN + '   score ' + (score | 0) + '   best ' + best +
-    log + '\n\nSTART to try again'
+    log
   );
   objText.setText('');
 }
@@ -1349,6 +1362,7 @@ function updateBullets() {
           const r = PLAYER_R + 3;
           if (d2(b.x, b.y, player.x, player.y) < r * r) {
             damagePlayer(b.dmg);
+            applyDot(player, b);
             if (b.exp) explode(b.x, b.y, b.exp, b.expDmg * 0.5, b.owner);
             dead = true;
           }
@@ -1413,12 +1427,7 @@ function damageEnemy(e, b) {
     const heal = dmg * b.vamp;
     player.hp = Math.min(player.maxHp, player.hp + heal);
   }
-  for (const k of ['burn', 'poison']) {
-    if (!b[k]) continue;
-    if ((e[k] || 0) < b[k]) e[k] = b[k];
-    const dk = k + 'Dmg';
-    if ((e[dk] || 0) < b[dk]) e[dk] = b[dk];
-  }
+  applyDot(e, b);
   if (e.hp <= 0) killEnemy(e, b.crit ? 'headshot' : b.exp ? 'explosion' : 'normal');
 }
 
@@ -1552,7 +1561,7 @@ function updateProps() {
 function runTick() {
   if (toast.t > 0) toast.t--;
   if (mode === 'title' || mode === 'gameover') {
-    if (consumePress('START1')) startRun();
+    if (consumePress('START1')) mode === 'gameover' ? goTitle() : startRun();
     return;
   }
   if (mode === 'pause') {
@@ -1561,6 +1570,8 @@ function runTick() {
   }
   if (consumePress('START1')) { goTitle(); mode = 'pause'; titleText.setText('PAUSED'); return; }
   controlPlayer();
+  tickDot(player, 'burn', FIRE_COLS);
+  tickDot(player, 'poison', POISON_COLS);
   for (const e of enemies) {
     updateAI(e);
     tickDot(e, 'burn', FIRE_COLS);
@@ -1795,7 +1806,7 @@ function drawMap() {
   for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
     if (map && isSolid(map, x, y)) continue;
     const h = ((x * 73856093) ^ (y * 19349663)) & 0xff;
-    fr(g, 0x10171f + (h & 0x1f), 1, x * TILE, y * TILE, TILE, TILE);
+    fr(g, 0x1a2230 + (h & 0x1f), 1, x * TILE, y * TILE, TILE, TILE);
     if ((h & 0x07) === 0) fr(g, 0x222a35, 0.4, x * TILE + 6, y * TILE + 12, 4, 2);
     if ((h & 0x1f) === 5) fc(g, 0x1c2630, 0.5, x * TILE + 28, y * TILE + 22, 3);
   }

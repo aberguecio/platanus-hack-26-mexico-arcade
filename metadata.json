@@ -1,5 +1,5 @@
 {
   "game_name": "ONE MORE EXTRACTION",
-  "description": "Top-down stealth roguelite. You are a lone triangle running mission after mission through procgen complexes — extract, destroy, rescue, eliminate, hack, heist. Loot weapons (pistol, shotgun, SMG, rifle, sniper, LMG, launcher), stack mods (rapid, explosive, lifesteal, pierce, crit...) and pick passive perks (berserk, glass cannon, juggernaut...) to forge a run. Enemies patrol with sight cones and hearing — they only fight when they spot or hear you, and take cover to reload. Single-player. Highscore = deepest level reached.",
+  "description": "Top-down stealth roguelite. You are a lone agent running mission after mission through procgen complexes — extract, destroy, rescue, eliminate, hack, heist. Loot 9 weapons (pistol, shotgun, SMG, rifle, burst rifle, sniper, LMG, launcher, flamethrower) and stack mods (rapid, explosive, lifesteal, pierce, crit, ricochet, magnum, silenced, multishot, incendiary, poison, laser) to forge a run. Enemies patrol with sight cones and hearing — get spotted and the timer starts; hack a terminal to reset it. Crits become headshots, burn and poison stack, and the deeper you go the meaner they get. Single-player. Top 5 scores saved.",
   "player_mode": "single_player"
 }
