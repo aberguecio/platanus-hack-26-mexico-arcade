@@ -89,7 +89,6 @@ const ENEMIES = {
   demo:    { hp: 22, weapon: 'launcher',speed: 0.8, sight: 360, cone: 1.5, col: 0x553388, r: 12, react: 50,  score: 16 },
   marksman:{ hp: 32, weapon: 'rifle',   speed: 1.0, sight: 520, cone: 1.4, col: 0x555555, r: 11, react: 12,  score: 11 },
 };
-const ENEMY_IDS = Object.keys(ENEMIES);
 // Skin tones used as random head-inner color per enemy spawn.
 const SKINS = [0xffe0b8, 0xf2cba0, 0xe0a878, 0xc08858, 0xa06838, 0x704020, 0x3a2010];
 
@@ -611,7 +610,6 @@ function chooseMission(n) {
   if (r < 0.83) return { type: 'hack' };
   return { type: 'heist', carrying: false };
 }
-function missionTitle(m) { return 'MISSION: ' + m.type.toUpperCase(); }
 function setupMission() {
   MISSIONS[mission.type].setup(mission, levelN);
   setDeadline(mission);
@@ -873,6 +871,7 @@ function nextLevel() {
 }
 
 function gameOver() {
+  if (mode === 'gameover') return;
   mode = 'gameover';
   if (mission) MISSIONS[mission.type].end?.(mission, false);
   if (levelN - 1 > best) best = levelN - 1;
@@ -889,6 +888,7 @@ function gameOver() {
     log
   );
   objText.setText('');
+  try { if (score > 0) window.onExtractionScore?.(score | 0); } catch {}
 }
 
 // ========================================================================

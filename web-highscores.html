@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>One More Extraction · Global scores</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #eef2ff; background: #0c101a; font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 1120px; margin: auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 4fr) minmax(180px, 1fr); gap: 20px; }
+    #game-root { aspect-ratio: 4/3; }
+    canvas { display: block; }
+    h1, h2 { font-size: 20px; margin: 0 0 12px; }
+    ol { padding-left: 22px; }
+    li { overflow-wrap: anywhere; }
+    button, input { font: inherit; padding: 6px 10px; }
+    dialog { background: #182133; color: inherit; border: 1px solid #52627a; border-radius: 8px; max-width: calc(100% - 32px); }
+    dialog::backdrop { background: #030812cc; }
+    label { display: block; margin-bottom: 10px; }
+    @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="game-root"></div>
+    <section aria-labelledby="scores-title">
+      <h1 id="scores-title">Global top five</h1>
+      <ol id="ranking"></ol>
+      <p id="status" role="status"></p>
+    </section>
+  </main>
+  <dialog aria-labelledby="entry-title">
+    <form id="entry">
+      <h2 id="entry-title">Submit your score</h2>
+      <p id="points"></p>
+      <label>Player name <input name="player" maxlength="32" required autocomplete="off"></label>
+      <button type="submit">Submit</button>
+      <button type="button" id="skip">Skip</button>
+    </form>
+  </dialog>
+  <script src="web-highscores.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.87.0/dist/phaser.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
