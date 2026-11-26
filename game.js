@@ -214,23 +214,24 @@ let toast = { t: 0, max: 0, col: '#ffffff', text: '' };
 let musicStarted = false, musTimer = null, musStep = 0;
 
 function create() {
+  const fontFamily = 'monospace';
   scene = this;
   g = this.add.graphics();
   gHud = this.add.graphics().setScrollFactor(0).setDepth(900);
-  hudText = this.add.text(8, 44, '', { fontFamily: 'monospace', fontSize: '13px', color: '#cfd' })
+  hudText = this.add.text(8, 44, '', { fontFamily, fontSize: '13px', color: '#cfd' })
     .setScrollFactor(0).setDepth(1000);
-  objText = this.add.text(W / 2, 116, '', { fontFamily: 'monospace', fontSize: '14px', color: '#ffd060', align: 'center' })
+  objText = this.add.text(W / 2, 116, '', { fontFamily, fontSize: '14px', color: '#ffd060', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
-  msgText = this.add.text(W / 2, 120, '', { fontFamily: 'monospace', fontSize: '17px', color: '#fff', align: 'center' })
+  msgText = this.add.text(W / 2, 120, '', { fontFamily, fontSize: '17px', color: '#fff', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
   // Big stealth timer, top-right under the GPS compass.
-  timerText = this.add.text(W - 60, 50, '', { fontFamily: 'monospace', fontSize: '24px', color: '#ffd060', align: 'center' })
+  timerText = this.add.text(W - 60, 50, '', { fontFamily, fontSize: '24px', color: '#ffd060', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
   // Toast: short-lived center notice (pickups, detection, hack, mission complete).
-  toastText = this.add.text(W / 2, H / 2 - 60, '', { fontFamily: 'monospace', fontSize: '22px', color: '#fff', align: 'center', stroke: '#000', strokeThickness: 3 })
+  toastText = this.add.text(W / 2, H / 2 - 60, '', { fontFamily, fontSize: '22px', color: '#fff', align: 'center', stroke: '#000', strokeThickness: 3 })
     .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   // Big title (shown on title/gameover/pause screens).
-  titleText = this.add.text(W / 2, 70, '', { fontFamily: 'monospace', fontSize: '36px', color: '#ffd060' })
+  titleText = this.add.text(W / 2, 70, '', { fontFamily, fontSize: '36px', color: '#ffd060' })
     .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
   loadBest();
@@ -469,7 +470,7 @@ function goTitle() {
     'pick up weapons · stack mods · watch your ammo\n' +
     'escape · destroy · rescue · eliminate · hack · heist' +
     scores +
-    '\n\nSTART to play'
+    '\n\nSTART to play' + (window.extractionMenu || '')
   );
   objText.setText('');
 }
@@ -873,6 +874,7 @@ function nextLevel() {
 function gameOver() {
   if (mode === 'gameover') return;
   mode = 'gameover';
+  toast.t = 0;
   if (mission) MISSIONS[mission.type].end?.(mission, false);
   if (levelN - 1 > best) best = levelN - 1;
   recordScore(score | 0, levelN);
