@@ -89,7 +89,6 @@ const ENEMIES = {
   demo:    { hp: 22, weapon: 'launcher',speed: 0.8, sight: 360, cone: 1.5, col: 0x553388, r: 12, react: 50,  score: 16 },
   marksman:{ hp: 32, weapon: 'rifle',   speed: 1.0, sight: 520, cone: 1.4, col: 0x555555, r: 11, react: 12,  score: 11 },
 };
-const ENEMY_IDS = Object.keys(ENEMIES);
 // Skin tones used as random head-inner color per enemy spawn.
 const SKINS = [0xffe0b8, 0xf2cba0, 0xe0a878, 0xc08858, 0xa06838, 0x704020, 0x3a2010];
 
@@ -215,23 +214,24 @@ let toast = { t: 0, max: 0, col: '#ffffff', text: '' };
 let musicStarted = false, musTimer = null, musStep = 0;
 
 function create() {
+  const fontFamily = 'monospace';
   scene = this;
   g = this.add.graphics();
   gHud = this.add.graphics().setScrollFactor(0).setDepth(900);
-  hudText = this.add.text(8, 44, '', { fontFamily: 'monospace', fontSize: '13px', color: '#cfd' })
+  hudText = this.add.text(8, 44, '', { fontFamily, fontSize: '13px', color: '#cfd' })
     .setScrollFactor(0).setDepth(1000);
-  objText = this.add.text(W / 2, 116, '', { fontFamily: 'monospace', fontSize: '14px', color: '#ffd060', align: 'center' })
+  objText = this.add.text(W / 2, 116, '', { fontFamily, fontSize: '14px', color: '#ffd060', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
-  msgText = this.add.text(W / 2, 120, '', { fontFamily: 'monospace', fontSize: '17px', color: '#fff', align: 'center' })
+  msgText = this.add.text(W / 2, 120, '', { fontFamily, fontSize: '17px', color: '#fff', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
   // Big stealth timer, top-right under the GPS compass.
-  timerText = this.add.text(W - 60, 50, '', { fontFamily: 'monospace', fontSize: '24px', color: '#ffd060', align: 'center' })
+  timerText = this.add.text(W - 60, 50, '', { fontFamily, fontSize: '24px', color: '#ffd060', align: 'center' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
   // Toast: short-lived center notice (pickups, detection, hack, mission complete).
-  toastText = this.add.text(W / 2, H / 2 - 60, '', { fontFamily: 'monospace', fontSize: '22px', color: '#fff', align: 'center', stroke: '#000', strokeThickness: 3 })
+  toastText = this.add.text(W / 2, H / 2 - 60, '', { fontFamily, fontSize: '22px', color: '#fff', align: 'center', stroke: '#000', strokeThickness: 3 })
     .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   // Big title (shown on title/gameover/pause screens).
-  titleText = this.add.text(W / 2, 70, '', { fontFamily: 'monospace', fontSize: '36px', color: '#ffd060' })
+  titleText = this.add.text(W / 2, 70, '', { fontFamily, fontSize: '36px', color: '#ffd060' })
     .setOrigin(0.5).setScrollFactor(0).setDepth(1000);
   this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
   loadBest();
@@ -470,7 +470,7 @@ function goTitle() {
     'pick up weapons · stack mods · watch your ammo\n' +
     'escape · destroy · rescue · eliminate · hack · heist' +
     scores +
-    '\n\nSTART to play'
+    '\n\nSTART to play' + (window.extractionMenu || '')
   );
   objText.setText('');
 }
@@ -611,7 +611,6 @@ function chooseMission(n) {
   if (r < 0.83) return { type: 'hack' };
   return { type: 'heist', carrying: false };
 }
-function missionTitle(m) { return 'MISSION: ' + m.type.toUpperCase(); }
 function setupMission() {
   MISSIONS[mission.type].setup(mission, levelN);
   setDeadline(mission);
@@ -873,7 +872,9 @@ function nextLevel() {
 }
 
 function gameOver() {
+  if (mode === 'gameover') return;
   mode = 'gameover';
+  toast.t = 0;
   if (mission) MISSIONS[mission.type].end?.(mission, false);
   if (levelN - 1 > best) best = levelN - 1;
   recordScore(score | 0, levelN);
@@ -889,6 +890,7 @@ function gameOver() {
     log
   );
   objText.setText('');
+  try { if (score > 0) window.onExtractionScore?.(score | 0); } catch {}
 }
 
 // ========================================================================
